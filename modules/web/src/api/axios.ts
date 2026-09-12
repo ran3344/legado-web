@@ -5,8 +5,12 @@ import {
   requestSourceApiToken,
 } from './sourceToken'
 
-/** @type {string} localStorage保存自定义阅读http服务接口的键值 */
-export const baseURL_localStorage_key = 'remoteUrl'
+// 旧版曾用 localStorage('remoteUrl') 覆盖后端地址（对应 UI 已移除），
+// 残留值会让书架永远连不上当前服务，这里做一次清理。
+try {
+  localStorage.removeItem('remoteUrl')
+  localStorage.removeItem('remoteOrigin')
+} catch {}
 const SECOND = 1000
 const protectedSourcePaths = new Set([
   'saveJsSource',
@@ -24,10 +28,7 @@ const protectedSourcePaths = new Set([
 ])
 
 const ajax = axios.create({
-  baseURL:
-    import.meta.env.VITE_API ||
-    localStorage.getItem(baseURL_localStorage_key) ||
-    location.origin,
+  baseURL: import.meta.env.VITE_API || location.origin,
   timeout: 120 * SECOND,
 })
 

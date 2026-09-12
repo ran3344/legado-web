@@ -104,6 +104,9 @@ class ReviewWebApiContractTest {
             "if (uri.startsWith(\"/vue/\") && uri.endsWith(\".html\"))"
         ).substringBefore("}")
         assertTrue(vueHtmlHeaders.contains("addHeader(\"Cache-Control\", \"no-cache\")"))
+        assertTrue(server.contains("if (uri.startsWith(\"/vue/assets/\"))"))
+        assertTrue(server.contains("max-age=31536000, immutable"))
+        assertFalse(server.contains("WebService.serve()"))
         assertTrue(server.contains("if (uri == \"/legacyReviewPage\") \"<redacted>\""))
         assertTrue(axios.contains("'openLegacyReview'"))
         assertFalse(axios.contains("'legacyReviewPage'"))
@@ -167,6 +170,29 @@ class ReviewWebApiContractTest {
         val imageBranch = dialog.indexOf("message.type === 'legado-legacy-review-image'")
         assertTrue(dialog.indexOf("event.source !== frameWindow") in 0 until imageBranch)
         assertTrue(dialog.indexOf("message.nonce !== props.sessionNonce") in 0 until imageBranch)
+    }
+
+    @Test
+    fun `web reader chapter transport avoids long polling and serves correct asset MIME types`() {
+        val controller = readProjectFile(
+            "app/src/main/java/io/legado/app/api/controller/BookController.kt"
+        )
+        val assets = readProjectFile(
+            "app/src/main/java/io/legado/app/web/utils/AssetsWeb.kt"
+        )
+
+        assertFalse(controller.contains("while (chapter == null && wait < 30)"))
+        assertTrue(controller.contains("withTimeout(20_000)"))
+        assertTrue(controller.contains("contentRequests.computeIfAbsent"))
+        assertTrue(assets.contains("suffix.equals(\".woff2\", ignoreCase = true)"))
+        assertTrue(assets.contains("suffix.equals(\".png\", ignoreCase = true)"))
+        assertTrue(assets.contains("val suffix = \".\" + path.substringAfterLast"))
+        val server = readProjectFile("app/src/main/java/io/legado/app/web/HttpServer.kt")
+        assertTrue(server.contains("streamBookContent(session)"))
+        assertTrue(server.contains("streamPostResponse("))
+        assertFalse(server.contains("returnData = runBlocking"))
+        assertTrue(server.contains("chapterResponseScope.launch"))
+        assertTrue(server.contains("chapterResponseScope.cancel()"))
     }
 
     @Test

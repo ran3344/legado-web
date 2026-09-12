@@ -134,37 +134,46 @@
             >
           </div>
         </li>
-        <li class="paragraph-spacing">
-          <i>翻页速度</i>
-          <div class="resize">
-            <div class="resize">
-              <span class="less" @click="lessJumpDuration">
-                <em class="iconfont">&#xe625;</em>
-              </span>
-              <b></b> <span class="lang">{{ jumpDuration }}</span
-              ><b></b>
-              <span class="more" @click="moreJumpDuration"
-                ><em class="iconfont">&#xe626;</em></span
-              >
-            </div>
+        <li class="read-mode">
+          <i>阅读模式</i>
+          <div class="read-mode-list">
+            <button
+              class="read-mode-item"
+              v-for="mode in readModeOptions"
+              :key="mode.value"
+              :class="{ selected: readMode === mode.value }"
+              type="button"
+              @click="setReadMode(mode.value)"
+            >
+              <span class="mode-title">{{ mode.label }}</span>
+              <span class="mode-desc">{{ mode.desc }}</span>
+            </button>
           </div>
         </li>
-        <li class="infinite-loading">
-          <i>无限加载</i>
-          <span
-            class="infinite-loading-item"
-            :key="0"
-            :class="{ selected: infiniteLoading == false }"
-            @click="setInfiniteLoading(false)"
-            >关闭</span
-          >
-          <span
-            class="infinite-loading-item"
-            :key="1"
-            :class="{ selected: infiniteLoading == true }"
-            @click="setInfiniteLoading(true)"
-            >开启</span
-          >
+        <li v-if="readMode === 'click'" class="click-actions">
+          <i>点击区域</i>
+          <div class="click-grid">
+            <div
+              class="click-area"
+              v-for="area in readClickAreas"
+              :key="area.key"
+            >
+              <span class="area-name">{{ area.label }}</span>
+              <el-select
+                v-model="store.config.clickActions[area.key]"
+                class="area-action"
+                size="small"
+                :aria-label="`${area.label}点击动作`"
+              >
+                <el-option
+                  v-for="action in readClickActionOptions"
+                  :key="action.value"
+                  :label="action.label"
+                  :value="action.value"
+                />
+              </el-select>
+            </div>
+          </div>
         </li>
       </ul>
     </div>
@@ -177,8 +186,35 @@ import '../assets/fonts/iconfont.css'
 import settings from '../config/themeConfig'
 import API from '@api'
 import { useDebounceFn } from '@vueuse/shared'
+import {
+  readClickActionOptions,
+  readClickAreas,
+} from '../config/readClickActions'
+import type { ReadMode } from '@/web'
 
 const store = useBookStore()
+const readModeOptions: Array<{ label: string; value: ReadMode; desc: string }> =
+  [
+    {
+      label: '上下滚动',
+      value: 'scroll',
+      desc: '上下滑动阅读，章末继续显示下一章',
+    },
+    {
+      label: '左右翻页',
+      value: 'horizontal',
+      desc: '左右滑动或方向键按页切换',
+    },
+    {
+      label: '点击翻页',
+      value: 'click',
+      desc: '点击屏幕区域翻页，也支持左右滑动',
+    },
+  ]
+const readMode = computed(() => store.config.readMode)
+const setReadMode = (mode: ReadMode) => {
+  store.config.readMode = mode
+}
 const saveConfigDebounce = useDebounceFn(
   () => API.saveReadConfig(store.config),
   500,
@@ -335,25 +371,6 @@ const lessReadWidth = () => {
   if (store.config.readWidth > 640) store.config.readWidth -= 160
 }
 
-//翻页速度
-const jumpDuration = computed(() => {
-  return store.config.jumpDuration
-})
-const moreJumpDuration = () => {
-  store.config.jumpDuration += 100
-}
-const lessJumpDuration = () => {
-  if (store.config.jumpDuration === 0) return
-  store.config.jumpDuration -= 100
-}
-
-//无限加载
-const infiniteLoading = computed(() => {
-  return store.config.infiniteLoading
-})
-const setInfiniteLoading = (loading: boolean) => {
-  store.config.infiniteLoading = loading
-}
 </script>
 
 <style lang="scss" scoped>
@@ -434,12 +451,10 @@ const setInfiniteLoading = (loading: boolean) => {
         }
       }
 
-      .font-list,
-      .infinite-loading {
+      .font-list {
         margin-top: 28px;
 
-        .font-item,
-        .infinite-loading-item {
+        .font-item {
           width: 78px;
           height: 34px;
           cursor: pointer;
@@ -464,8 +479,7 @@ const setInfiniteLoading = (loading: boolean) => {
           border: 1px solid #ed4259;
         }
 
-        .font-item:hover,
-        .infinite-loading-item:hover {
+        .font-item:hover {
           border: 1px solid #ed4259;
           color: #ed4259;
         }
@@ -475,7 +489,9 @@ const setInfiniteLoading = (loading: boolean) => {
       .read-width,
       .letter-spacing,
       .line-spacing,
-      .paragraph-spacing {
+      .paragraph-spacing,
+      .read-mode,
+      .click-actions {
         margin-top: 28px;
 
         .resize {
@@ -517,6 +533,76 @@ const setInfiniteLoading = (loading: boolean) => {
           }
         }
       }
+
+      .read-mode {
+        display: flex;
+        align-items: flex-start;
+
+        .read-mode-list {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 8px;
+          width: min(480px, 100%);
+        }
+
+        .read-mode-item {
+          min-height: 72px;
+          padding: 10px;
+          border-radius: 4px;
+          border: 1px solid rgba(0, 0, 0, 0.12);
+          background: rgba(255, 255, 255, 0.42);
+          text-align: left;
+          cursor: pointer;
+        }
+
+        .mode-title {
+          display: block;
+          color: #333;
+          font-size: 14px;
+          line-height: 18px;
+          font-weight: 600;
+        }
+
+        .mode-desc {
+          display: block;
+          margin-top: 6px;
+          color: #777;
+          font-size: 12px;
+          line-height: 16px;
+        }
+
+        .selected {
+          border-color: #ed4259;
+
+          .mode-title {
+            color: #ed4259;
+          }
+        }
+      }
+
+      .click-actions {
+        display: flex;
+        align-items: flex-start;
+
+        .click-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 8px;
+          width: min(420px, 100%);
+        }
+
+        .click-area {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .area-name {
+          color: #666;
+          font-size: 12px;
+          line-height: 16px;
+        }
+      }
     }
   }
 }
@@ -534,12 +620,28 @@ const setInfiniteLoading = (loading: boolean) => {
     color: #ed4259;
   }
 
-  :deep(.font-list),
-  .infinite-loading {
-    .font-item,
-    .infinite-loading-item {
+  :deep(.font-list) {
+    .font-item {
       border: 1px solid #666;
       background: rgba(45, 45, 45, 0.5);
+    }
+  }
+
+  :deep(.read-mode-item) {
+    border-color: #666;
+    background: rgba(45, 45, 45, 0.5);
+
+    .mode-title,
+    .mode-desc {
+      color: #666;
+    }
+  }
+
+  :deep(.read-mode-item.selected) {
+    border-color: #ed4259;
+
+    .mode-title {
+      color: #ed4259;
     }
   }
 
@@ -567,10 +669,8 @@ const setInfiniteLoading = (loading: boolean) => {
     color: rgba(255, 255, 255, 0.2);
   }
 
-  :deep(.font-list),
-  .infinite-loading {
-    .font-item,
-    .infinite-loading-item {
+  :deep(.font-list) {
+    .font-item {
       background: rgba(255, 255, 255, 0.5);
       border: 1px solid rgba(0, 0, 0, 0.1);
     }
@@ -587,10 +687,82 @@ const setInfiniteLoading = (loading: boolean) => {
 }
 
 @media screen and (max-width: 500px) {
-  .settings-wrapper i {
-    display: flex !important;
-    flex-wrap: wrap;
-    padding-bottom: 5px !important;
+  .settings-wrapper {
+    box-sizing: border-box;
+    width: 100%;
+    margin: -13px;
+    padding: 18px 12px 16px;
+
+    .settings-title {
+      margin-bottom: 16px;
+    }
+
+    .setting-list {
+      max-height: calc(100vh - 120px);
+      overflow-x: hidden;
+    }
+
+    .setting-list ul li i {
+      display: block !important;
+      min-width: 0;
+      margin: 0 0 8px;
+      padding-bottom: 0 !important;
+    }
+
+    .theme-item {
+      margin-right: 10px !important;
+    }
+
+    .font-list,
+    .font-size,
+    .read-width,
+    .letter-spacing,
+    .line-spacing,
+    .paragraph-spacing,
+    .read-mode,
+    .click-actions {
+      margin-top: 18px !important;
+    }
+
+    .font-item {
+      margin-right: 8px !important;
+    }
+
+    .font-item-input {
+      width: min(168px, calc(100% - 94px)) !important;
+    }
+
+    .resize {
+      display: grid !important;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      width: 100% !important;
+
+      span {
+        width: auto !important;
+      }
+    }
+
+    .click-actions {
+      display: block !important;
+
+      .click-grid {
+        width: 100% !important;
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+      }
+    }
+
+    .read-mode {
+      display: block !important;
+
+      .read-mode-list {
+        width: 100% !important;
+        grid-template-columns: 1fr !important;
+      }
+
+      .read-mode-item {
+        min-height: 0;
+      }
+    }
   }
 }
 </style>

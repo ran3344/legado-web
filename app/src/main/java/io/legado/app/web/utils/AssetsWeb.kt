@@ -31,14 +31,22 @@ class AssetsWeb(rootPath: String) {
     }
 
     private fun getMimeType(path: String): String {
-        val suffix = path.substring(path.lastIndexOf("."))
+        val suffix = "." + path.substringAfterLast('.', "")
         return when {
             suffix.equals(".html", ignoreCase = true)
                     || suffix.equals(".htm", ignoreCase = true) -> "text/html"
             suffix.equals(".js", ignoreCase = true) -> "text/javascript"
             suffix.equals(".css", ignoreCase = true) -> "text/css"
             suffix.equals(".ico", ignoreCase = true) -> "image/x-icon"
-            suffix.equals(".jpg", ignoreCase = true) -> "image/jpg"
+            suffix.equals(".jpg", ignoreCase = true) ||
+                    suffix.equals(".jpeg", ignoreCase = true) -> "image/jpeg"
+            suffix.equals(".png", ignoreCase = true) -> "image/png"
+            suffix.equals(".svg", ignoreCase = true) -> "image/svg+xml"
+            suffix.equals(".webp", ignoreCase = true) -> "image/webp"
+            suffix.equals(".woff", ignoreCase = true) -> "font/woff"
+            suffix.equals(".woff2", ignoreCase = true) -> "font/woff2"
+            suffix.equals(".ttf", ignoreCase = true) -> "font/ttf"
+            suffix.equals(".json", ignoreCase = true) -> "application/json"
             else -> "text/html"
         }
     }

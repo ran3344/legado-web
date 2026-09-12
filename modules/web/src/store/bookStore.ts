@@ -7,24 +7,43 @@ import type {
   BookProgress,
   SeachBook,
 } from '@/book'
-import type { webReadConfig } from '@/web'
+import type { ReadClickActions, webReadConfig } from '@/web'
 import { ElMessage } from 'element-plus/es'
+import {
+  defaultReadClickActions,
+  isReadClickAction,
+  readClickAreaKeys,
+} from '@/config/readClickActions'
 
 const default_config: webReadConfig = {
   theme: 0,
   font: 0,
   fontSize: 18,
   readWidth: 800,
-  infiniteLoading: false,
+  readMode: 'scroll',
+  reSegment: false,
   customFontName: '',
-  jumpDuration: 1000,
+  clickActions: { ...defaultReadClickActions },
   spacing: {
     paragraph: 1,
     line: 0.8,
     letter: 0,
   },
 }
+
+const normalizeClickActions = (
+  actions: Partial<ReadClickActions> = {},
+): ReadClickActions => {
+  const result = { ...defaultReadClickActions, ...actions }
+  for (const key of readClickAreaKeys) {
+    if (!isReadClickAction(result[key]))
+      result[key] = defaultReadClickActions[key]
+  }
+  return result
+}
+
 let webReadConfigLoadedDate: Date | undefined
+let catalogRequestId = 0
 
 export const useBookStore = defineStore('book', {
   state: () => {
@@ -32,6 +51,7 @@ export const useBookStore = defineStore('book', {
       searchBooks: [] as SeachBook[],
       shelf: [] as Book[],
       catalog: [] as BookChapter[],
+      catalogBookUrl: '',
       readingBook: { chapterPos: 0, chapterIndex: 0 } as BaseBook & {
         chapterPos: number
         chapterIndex: number
@@ -72,21 +92,9 @@ export const useBookStore = defineStore('book', {
         console.log('API.getBookShelf数据返回')
         const { isSuccess, data, errorMsg } = resp.data
         if (isSuccess === true) {
-          if (
-            this.shelf.length !== data.length &&
-            this.shelf.length > 0 &&
-            data.length > 0
-          ) {
-            ElMessage.info(`书架数据已更新`)
-          }
-          this.shelf = data.sort((a, b) => {
-            const x = a['durChapterTime'] || 0
-            const y = b['durChapterTime'] || 0
-            return y - x
-          })
+          this.shelf = data
         } else {
           if (errorMsg.includes('还没有添加小说') && this.shelf.length > 0) {
-            ElMessage.info('当前书架上的书籍已经被删除')
             return (this.shelf = [])
           }
           ElMessage.error(errorMsg ?? '后端返回格式错误！')
@@ -109,6 +117,7 @@ export const useBookStore = defineStore('book', {
       book: typeof this.readingBook,
     ): Promise<BookChapter[]> {
       const { bookUrl, name, chapterIndex } = book
+      const requestId = ++catalogRequestId
       const fetchChapterList_promise = API.getChapterList(
         bookUrl as string,
       ).then(res => {
@@ -117,20 +126,16 @@ export const useBookStore = defineStore('book', {
           ElMessage.error(errorMsg)
           throw new Error()
         }
-        if (
-          bookUrl === this.readingBook.bookUrl &&
-          data.length !== this.catalog.length &&
-          data.length > 0 &&
-          this.catalog.length > 0
-        ) {
-          ElMessage.info(`书籍${name}: 章节目录已更新`)
+        if (requestId === catalogRequestId) {
+          this.catalog = data
+          this.catalogBookUrl = bookUrl as string
         }
-        this.catalog = data
         console.log(`书籍${name}: 章节目录已更新`)
-        return this.catalog
+        return data
       })
       if (
         bookUrl === this.readingBook.bookUrl &&
+        this.catalogBookUrl === bookUrl &&
         this.catalog.length > 0 &&
         this.catalog.length - 1 >= chapterIndex
       ) {
@@ -164,8 +169,21 @@ export const useBookStore = defineStore('book', {
         `${this.$id}.loadWebConfig: 已于${webReadConfigLoadedDate.toLocaleString()}成功加载`,
       )
     },
-    setConfig(config?: webReadConfig) {
-      this.config = Object.assign({}, this.config, config)
+    setConfig(config?: Partial<webReadConfig>) {
+      const nextConfig: Partial<webReadConfig> = config ?? {}
+      this.config = {
+        ...this.config,
+        ...nextConfig,
+        spacing: {
+          ...default_config.spacing,
+          ...this.config.spacing,
+          ...nextConfig.spacing,
+        },
+        clickActions: normalizeClickActions({
+          ...this.config.clickActions,
+          ...nextConfig.clickActions,
+        }),
+      }
     },
     setReadSettingsVisible(visible: boolean) {
       this.readSettingsVisible = visible
@@ -175,6 +193,9 @@ export const useBookStore = defineStore('book', {
     },
     setMiniInterface(mini: boolean) {
       this.miniInterface = mini
+    },
+    removeBook(bookUrl: string) {
+      this.shelf = this.shelf.filter(book => book.bookUrl !== bookUrl)
     },
     async setSearchBooks(books: SeachBook[]) {
       books.forEach(book => {

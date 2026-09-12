@@ -63,7 +63,7 @@ android {
     }
     defaultConfig {
         applicationId "com.legado.app"
-        minSdk 23
+        minSdk 26
         targetSdk 36
         versionCode = versionCodeValue
         versionName version

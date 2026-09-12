@@ -1,4 +1,4 @@
-import type { AxiosResponse } from 'axios'
+import axios, { type AxiosResponse } from 'axios'
 import type { LeagdoApiResponse } from './api'
 import API, {
   setWebsocketOnError,
@@ -49,7 +49,13 @@ const responseCheckInterceptor = (resp: AxiosResponse) => {
 }
 
 const axiosErrorInterceptor = (err: unknown) => {
-  if (err === 'cancel' || err === 'close') throw err
+  if (
+    err === 'cancel' ||
+    err === 'close' ||
+    (axios.isCancel(err) as boolean) ||
+    (err as { code?: string } | null)?.code === 'ERR_CANCELED'
+  )
+    throw err
   notification.error({
     message: '后端连接失败，请检查阅读WEB服务或者设置其它可用链接',
     grouping: true,

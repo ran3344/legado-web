@@ -1,72 +1,81 @@
-import { fileURLToPath, URL } from "node:url";
-import { defineConfig, type UserConfig } from "vite";
-import vue from "@vitejs/plugin-vue";
-import Icons from "unplugin-icons/vite";
-import IconsResolver from "unplugin-icons/resolver";
-import AutoImport from "unplugin-auto-import/vite";
-import Components from "unplugin-vue-components/vite";
-import { ElementPlusResolver } from "unplugin-vue-components/resolvers";
+import { fileURLToPath, URL } from 'node:url'
+import { defineConfig, type UserConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
+import Icons from 'unplugin-icons/vite'
+import IconsResolver from 'unplugin-icons/resolver'
+import AutoImport from 'unplugin-auto-import/vite'
+import Components from 'unplugin-vue-components/vite'
+import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }): UserConfig => {
   return {
     plugins: [
-      vue(),
+      vue({
+        template: {
+          compilerOptions: {
+            isCustomElement: tag => tag.startsWith('foliate-'),
+          },
+        },
+      }),
       AutoImport({
-        imports: ["vue", "vue-router", "pinia"],
+        imports: ['vue', 'vue-router', 'pinia'],
         include: [/\.[tj]sx?$/, /\.vue$/, /\.vue\?vue/],
-        dirs: ["src/components", "src/store", "*.d.ts"],
+        dirs: ['src/components', 'src/store', '*.d.ts'],
         eslintrc: {
           //enabled: true,
         },
         resolvers: [
           ElementPlusResolver(),
           IconsResolver({
-            prefix: "Icon",
+            prefix: 'Icon',
           }),
         ],
-        dts: "./src/auto-imports.d.ts",
+        dts: './src/auto-imports.d.ts',
       }),
       Components({
         resolvers: [
           ElementPlusResolver(),
           IconsResolver({
-            enabledCollections: ["ep"],
+            enabledCollections: ['ep'],
           }),
         ],
-        dts: "./src/components.d.ts",
+        dts: './src/components.d.ts',
       }),
       Icons({
         autoInstall: true,
       }),
     ],
-    base: mode === "development" ? "/" : "./",
+    base: mode === 'development' ? '/' : './',
     server: {
       port: 8080,
     },
     resolve: {
       alias: {
-        "@": fileURLToPath(new URL("./src", import.meta.url)),
-        "@api": fileURLToPath(new URL("./src/api", import.meta.url)),
-        "@utils": fileURLToPath(new URL("./src/utils/", import.meta.url)),
+        '@': fileURLToPath(new URL('./src', import.meta.url)),
+        '@api': fileURLToPath(new URL('./src/api', import.meta.url)),
+        '@utils': fileURLToPath(new URL('./src/utils/', import.meta.url)),
       },
     },
     build: {
       rolldownOptions: {
         output: {
-          minify: mode === "development" ? true : {
-            compress: {
-              dropConsole: true,
-              dropDebugger: true,
-            },
-          },
-          manualChunks: (id) => {
-            if (id.includes("node_modules")) {
-              return "vendor";
+          minify:
+            mode === 'development'
+              ? true
+              : {
+                  compress: {
+                    dropConsole: true,
+                    dropDebugger: true,
+                  },
+                },
+          manualChunks: id => {
+            if (id.includes('node_modules')) {
+              return 'vendor'
             }
           },
         },
       },
     },
   }
-});
+})

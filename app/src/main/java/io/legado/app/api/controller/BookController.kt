@@ -7,6 +7,7 @@ import com.bumptech.glide.Glide
 import io.legado.app.api.ReturnData
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookProgress
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.AppWebDav
@@ -27,8 +28,14 @@ import io.legado.app.utils.cnCompare
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.printOnDebug
 import io.legado.app.utils.stackTraceStr
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.delay
 import splitties.init.appCtx
 import java.io.File
 import java.util.WeakHashMap
@@ -58,6 +65,32 @@ object BookController {
     @Volatile
     private var cachedImageContext: ImageContext? = null
     private val defaultCoverCache by lazy { WeakHashMap<Drawable, Bitmap>() }
+    private val contentRequestScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val contentRequests = java.util.concurrent.ConcurrentHashMap<String, Deferred<String>>()
+
+    private suspend fun getRemoteContent(
+        bookSource: BookSource,
+        book: Book,
+        chapter: BookChapter,
+    ): String {
+        val key = "${book.bookUrl}:${chapter.index}"
+        val request = contentRequests.computeIfAbsent(key) {
+            contentRequestScope.async {
+                withTimeout(20_000) {
+                    WebBook.getContentAwait(bookSource, book, chapter).let {
+                        val contentProcessor = ContentProcessor.get(book.name, book.origin)
+                        contentProcessor.getContent(book, chapter, it, includeTitle = false)
+                            .toString()
+                    }
+                }
+            }
+        }
+        return try {
+            request.await()
+        } finally {
+            if (request.isCompleted) contentRequests.remove(key, request)
+        }
+    }
 
     /**
      * 书架所有书籍
@@ -207,17 +240,19 @@ object BookController {
         }
         val book = appDb.bookDao.getBook(bookUrl)
         val chapter = runBlocking {
-            var chapter = appDb.bookChapterDao.getChapter(bookUrl, index)
-            var wait = 0
-            while (chapter == null && wait < 30) {
-                delay(1000)
-                chapter = appDb.bookChapterDao.getChapter(bookUrl, index)
-                wait++
+            var resolved = appDb.bookChapterDao.getChapter(bookUrl, index)
+            if (resolved == null) {
+                repeat(2) {
+                    if (resolved == null) {
+                        delay(100)
+                        resolved = appDb.bookChapterDao.getChapter(bookUrl, index)
+                    }
+                }
             }
-            chapter
+            resolved
         }
         if (book == null || chapter == null) {
-            return returnData.setErrorMsg("未找到")
+            return returnData.setErrorMsg("章节不存在或目录尚未同步，请刷新目录后重试")
         }
         var content: String? = BookHelp.getContent(book, chapter)
         if (content != null) {
@@ -231,13 +266,7 @@ object BookController {
         val bookSource = appDb.bookSourceDao.getBookSource(book.origin)
             ?: return returnData.setErrorMsg("未找到书源")
         try {
-            content = runBlocking {
-                WebBook.getContentAwait(bookSource, book, chapter).let {
-                    val contentProcessor = ContentProcessor.get(book.name, book.origin)
-                    contentProcessor.getContent(book, chapter, it, includeTitle = false)
-                        .toString()
-                }
-            }
+            content = runBlocking { getRemoteContent(bookSource, book, chapter) }
             returnData.setData(content)
         } catch (e: Exception) {
             returnData.setErrorMsg(e.stackTraceStr)

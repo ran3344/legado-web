@@ -94,12 +94,14 @@ const getChapterList = (/** @type {string} */ bookUrl: string) =>
 const getBookContent = (
   /** @type {string} */ bookUrl: string,
   /** @type {number} */ chapterIndex: number,
+  signal?: AbortSignal,
 ) =>
   ajax.get<LeagdoApiResponse<string>>(
     'getBookContent?url=' +
       encodeURIComponent(bookUrl) +
       '&index=' +
       chapterIndex,
+    signal ? { signal } : undefined,
   )
 
 const getReviewSummary = (bookUrl: string, chapterIndex: number) =>

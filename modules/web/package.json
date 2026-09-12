@@ -14,6 +14,8 @@
     "build-only": "vite build",
     "test": "node --test",
     "type-check": "vue-tsc --build --force",
+    "e2e": "playwright test",
+    "e2e:headed": "playwright test --headed",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write src/"
   },
@@ -32,6 +34,7 @@
     "vue3-virtual-scroll-list": "^0.2.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tsconfig/node20": "^20.1.10",
     "@types/node": "^25.9.5",
     "@vitejs/plugin-vue": "^6.0.8",

@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.node.json",
+  "include": ["./**/*.ts"],
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": true,
+    "tsBuildInfoFile": "../node_modules/.tmp/tsconfig.e2e.tsbuildinfo",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"]
+  }
+}
