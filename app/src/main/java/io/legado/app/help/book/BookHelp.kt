@@ -554,10 +554,10 @@ object BookHelp {
         )
         if (file.exists()) {
             val string = file.readText()
-            if (string.isEmpty()) {
-                return null
+            if (string.isNotEmpty()) {
+                return string
             }
-            return string
+            //空的缓存文件不能当成"没有正文", 本地书籍还要回退到书籍文件
         }
         if (book.isLocal) {
             val string = LocalBook.getContent(book, bookChapter)

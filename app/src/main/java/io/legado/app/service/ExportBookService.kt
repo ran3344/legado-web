@@ -36,6 +36,7 @@ import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.getBookSource
 import io.legado.app.help.book.getExportFileName
 import io.legado.app.help.book.isImage
+import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isLocalModified
 import io.legado.app.help.book.isPdf
 import io.legado.app.help.book.update
@@ -303,6 +304,7 @@ class ExportBookService : BaseService() {
                 try {
                     book ?: throw NoStackTraceException("获取${bookUrl}书籍出错")
                     refreshChapterList(book)
+                    checkChapterListForExport(book)
                     notificationContentText = getString(
                         R.string.export_book_notification_content,
                         book.name,
@@ -339,7 +341,12 @@ class ExportBookService : BaseService() {
     }
 
     private fun refreshChapterList(book: Book) {
-        if (!book.isLocalModified()) {
+        if (!book.isLocal) {
+            return
+        }
+        val chapterCount = appDb.bookChapterDao.getChapterCount(book.bookUrl)
+        //本地书籍导入后可能一直没打开, 目录尚未解析, 此时也要解析, 否则导出只剩书头
+        if (!shouldRefreshChapterList(chapterCount, book.isLocalModified())) {
             return
         }
         kotlin.runCatching {
@@ -349,6 +356,19 @@ class ExportBookService : BaseService() {
             appDb.bookChapterDao.insert(*it.toTypedArray())
             book.update()
             ReadBook.onChapterListUpdated(book)
+        }.onFailure {
+            AppLog.put("导出前解析<${book.name}>目录出错", it)
+        }
+    }
+
+    /**
+     * 目录为空的书籍导出只会得到只剩书头的残缺文件, 直接报错
+     */
+    private fun checkChapterListForExport(book: Book) {
+        if (appDb.bookChapterDao.getChapterCount(book.bookUrl) == 0) {
+            throw NoStackTraceException(
+                "${book.name} ${appCtx.getString(R.string.chapter_list_empty)}"
+            )
         }
     }
 
@@ -378,23 +398,38 @@ class ExportBookService : BaseService() {
 
         val bookDoc = fileDoc.createFileIfNotExist(filename)
         val charset = Charset.forName(AppConfig.exportCharset)
-        bookDoc.openOutputStream().getOrThrow().bufferedWriter(charset).use { bw ->
-            getAllContents(book) { text, srcList ->
-                bw.write(text)
-                srcList?.forEach {
-                    val vFile = BookHelp.getImage(book, it.src)
-                    if (vFile.exists()) {
-                        fileDoc.createFileIfNotExist(
-                            "${it.index}-${MD5Utils.md5Encode16(it.src)}.jpg",
-                            subDirs = arrayOf(
-                                "${book.name}_${book.author}",
-                                "images",
-                                it.chapterTitle
-                            )
-                        ).writeFile(vFile)
+        var chapterNum = 0
+        try {
+            bookDoc.openOutputStream().getOrThrow().bufferedWriter(charset).use { bw ->
+                getAllContents(book) { text, srcList ->
+                    if (text.isNotEmpty()) {
+                        chapterNum++
+                    }
+                    bw.write(text)
+                    srcList?.forEach {
+                        val vFile = BookHelp.getImage(book, it.src)
+                        if (vFile.exists()) {
+                            fileDoc.createFileIfNotExist(
+                                "${it.index}-${MD5Utils.md5Encode16(it.src)}.jpg",
+                                subDirs = arrayOf(
+                                    "${book.name}_${book.author}",
+                                    "images",
+                                    it.chapterTitle
+                                )
+                            ).writeFile(vFile)
+                        }
                     }
                 }
             }
+        } catch (e: Throwable) {
+            //导出中断会留下只剩书头的残缺文件, 直接清理
+            cleanupExportFile(bookDoc, "导出文件")
+            throw e
+        }
+        //一章正文都没取到说明导出结果是残缺的, 不能当作成功
+        if (chapterNum == 0) {
+            cleanupExportFile(bookDoc, "导出文件")
+            throw NoStackTraceException("${book.name} 未取到任何章节正文")
         }
         if (AppConfig.exportToWebDav) {
             // 导出到webdav
@@ -567,6 +602,7 @@ class ExportBookService : BaseService() {
                 val titleReplaceRules = contentProcessor.getTitleReplaceRules()
                 val replaceBook = book.toReplaceBook()
                 val bookSource = book.getBookSource()
+                var exportedChapterNum = 0
                 appDb.bookChapterDao.getChapterList(book.bookUrl)
                     .forEachIndexed { index, chapter ->
                         currentCoroutineContext().ensureActive()
@@ -629,8 +665,13 @@ class ExportBookService : BaseService() {
                                 }
                             }
                         }
+                        exportedChapterNum++
                         y += 8f
                     }
+                //一章正文都没画出来说明导出结果是残缺的, 不能当作成功
+                if (exportedChapterNum == 0) {
+                    throw NoStackTraceException("${book.name} 未取到任何章节正文")
+                }
                 finishPage()
                 stagingDoc.openOutputStream().getOrThrow().use { pdf.writeTo(it) }
             } catch (error: Throwable) {
@@ -999,6 +1040,7 @@ class ExportBookService : BaseService() {
             1
         }
         var parentSection: TOCReference? = null
+        var chapterNum = 0
         flow {
             appDb.bookChapterDao.getChapterList(book.bookUrl).forEach { chapter ->
                 emit(chapter)
@@ -1046,6 +1088,7 @@ class ExportBookService : BaseService() {
             if (exportChapter == null) {
                 return@collectIndexed
             }
+            chapterNum++
             val (title, chapterResource, resources, chapter) = exportChapter
             epubBook.resources.addAll(resources)
             if (chapter.isVolume) {
@@ -1055,6 +1098,10 @@ class ExportBookService : BaseService() {
             } else {
                 epubBook.addSection(parentSection, title, chapterResource)
             }
+        }
+        //一章正文都没取到说明导出结果是残缺的, 不能当作成功
+        if (chapterNum == 0) {
+            throw NoStackTraceException("${book.name} 未取到任何章节正文")
         }
     }
 
