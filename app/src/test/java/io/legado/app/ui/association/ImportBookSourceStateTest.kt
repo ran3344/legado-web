@@ -189,11 +189,11 @@ class ImportBookSourceStateTest {
         val viewModel = readProjectFile(
             "src/main/java/io/legado/app/ui/association/ImportBookSourceViewModel.kt"
         )
-        val setReplacement = viewModel.substringAfter("fun setUseSourceReplacement")
-            .substringBefore("private suspend fun importSourceUrl")
-        assertTrue(setReplacement.contains("useSourceReplacement = previousMode"))
-        assertTrue(setReplacement.contains("AppConfig.importReplaceSource = previousMode"))
-        assertTrue(setReplacement.contains("applyCandidateSources()"))
+        val refreshReplacement = viewModel.substringAfter("fun refreshSourceReplacements")
+            .substringBefore("private fun selectedRules")
+        assertTrue(refreshReplacement.contains("automaticSourceReplacement = previousMode"))
+        assertTrue(refreshReplacement.contains("AppConfig.importReplaceSource = automatic"))
+        assertTrue(refreshReplacement.contains("applyCandidateSources()"))
         val setSelection = viewModel.substringAfter("fun setSelection")
             .substringBefore("fun updateSource")
         assertTrue(
@@ -226,7 +226,9 @@ class ImportBookSourceStateTest {
                 codeDialog.indexOf("val canPreviewReplacement")
         )
         assertTrue(codeDialog.contains("initMenu(!disableEdit)"))
-        assertTrue(codeDialog.contains("saveEnabled && !show && searchView.isIconified"))
+        assertTrue(codeDialog.contains("saveEnabled && (!show || sourcePreview) && searchView.isIconified"))
+        assertTrue(codeDialog.contains("editorReadOnly = showingAlternate && !sourcePreview"))
+        assertTrue(codeDialog.contains("callback()?.onCodeSave(currentOriginalCode(), requestId)"))
         assertTrue(codeDialog.contains("findTextRanges("))
         assertTrue(codeDialog.contains("right - left - navigationWidth"))
         assertTrue(
@@ -292,4 +294,11 @@ class ImportBookSourceStateTest {
         requireNotNull(file) { "Project file not found: $pathInApp" }
         return file.readText()
     }
+    @Test
+    fun `reimport explicitly selects same timestamp source while allowing cancellation`() {
+        val same = ImportBookSourceStatus(isNew = false, isUpdate = false)
+        assertTrue(resolveImportSourceSelection(same, manualSelection = null, selectExisting = true))
+        assertFalse(resolveImportSourceSelection(same, manualSelection = false, selectExisting = true))
+    }
+
 }

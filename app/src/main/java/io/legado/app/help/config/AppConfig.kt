@@ -7,6 +7,7 @@ import io.legado.app.BuildConfig
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.appDb
+import io.legado.app.help.book.ResourceThemeGeneration
 import io.legado.app.utils.GSON
 import io.legado.app.utils.canvasrecorder.CanvasRecorderFactory
 import io.legado.app.utils.defaultSharedPreferences
@@ -32,7 +33,14 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
     private const val JS_SOURCE_API_PREFS = "js_source_api_credentials"
     private const val JS_SOURCE_API_TOKEN = "token"
 
-    val isCronet = appCtx.getPrefBoolean(PreferKey.cronet)
+    val isCronet: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.cronet)
+    var showSourceCheckStatus: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.showSourceCheckStatus, false)
+        set(value) = appCtx.putPrefBoolean(PreferKey.showSourceCheckStatus, value)
+    var blockSourceNavigation: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.blockSourceNavigation, false)
+        set(value) = appCtx.putPrefBoolean(PreferKey.blockSourceNavigation, value)
     var useAntiAlias = appCtx.getPrefBoolean(PreferKey.antiAlias)
     var userAgent: String = getPrefUserAgent()
     var customHosts = appCtx.getPrefString(PreferKey.customHosts)
@@ -72,9 +80,17 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
                 showBoardLine = appCtx.getPrefInt(PreferKey.showBoardLine, 1).coerceIn(1, 5)
             PreferKey.adaptSpecialStyle -> adaptSpecialStyle = appCtx.getPrefBoolean(PreferKey.adaptSpecialStyle, true)
 
+            PreferKey.dThemeName, PreferKey.dNThemeName,
+            PreferKey.cPrimary, PreferKey.cNPrimary, PreferKey.cAccent, PreferKey.cNAccent,
+            PreferKey.cBackground, PreferKey.cNBackground, PreferKey.cBBackground, PreferKey.cNBBackground,
+            PreferKey.bgImage, PreferKey.bgImageN -> ResourceThemeGeneration.changed()
+
             PreferKey.themeMode -> {
+                // Each preference mutation invalidates resources, including A -> B -> A
+                // before queued preference callbacks observe the final value.
                 themeMode = appCtx.getPrefString(PreferKey.themeMode, "0")
                 isEInkMode = themeMode == "3"
+                ResourceThemeGeneration.changed()
             }
 
             PreferKey.clickActionTL -> clickActionTL =
@@ -281,6 +297,9 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
     val immNavigationBar: Boolean
         get() = appCtx.getPrefBoolean(PreferKey.immNavigationBar, true)
 
+    val disablePredictiveBack: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.disablePredictiveBack, false)
+
     val screenOrientation: String?
         get() = appCtx.getPrefString(PreferKey.screenOrientation)
 
@@ -347,6 +366,10 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
 
     val showDiscoveryFastScroller: Boolean
         get() = appCtx.getPrefBoolean(PreferKey.showDiscoveryFastScroller, false)
+
+    var showExploreCategories: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.showExploreCategories, false)
+        set(value) = appCtx.putPrefBoolean(PreferKey.showExploreCategories, value)
 
     val showRSS: Boolean
         get() = appCtx.getPrefBoolean(PreferKey.showRss, true)
@@ -553,6 +576,22 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
             appCtx.putPrefBoolean(PreferKey.tocCountWords, value)
         }
 
+    var readRecordSimpleLayout: Boolean
+        get() = appCtx.getPrefBoolean("readRecordSimpleLayout", true)
+        set(value) { appCtx.putPrefBoolean("readRecordSimpleLayout", value) }
+
+    var readRecordUseDays: Boolean
+        get() = appCtx.getPrefBoolean("readRecordUseDays", false)
+        set(value) { appCtx.putPrefBoolean("readRecordUseDays", value) }
+
+    var readRecordShowSeconds: Boolean
+        get() = appCtx.getPrefBoolean("readRecordShowSeconds", true)
+        set(value) { appCtx.putPrefBoolean("readRecordShowSeconds", value) }
+
+    var readRecordFixedCard: Boolean
+        get() = appCtx.getPrefBoolean("readRecordFixedCard", true)
+        set(value) { appCtx.putPrefBoolean("readRecordFixedCard", value) }
+
     var enableReadRecord: Boolean
         get() = appCtx.getPrefBoolean(PreferKey.enableReadRecord, true)
         set(value) {
@@ -653,6 +692,22 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
             appCtx.putPrefBoolean(PreferKey.importReplaceSource, value)
         }
 
+    var importRememberGroup: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.importRememberGroup, false)
+        set(value) {
+            appCtx.putPrefBoolean(PreferKey.importRememberGroup, value)
+            if (!value) {
+                importLastGroup = null
+                importLastGroupAdd = false
+            }
+        }
+    var importLastGroup: String?
+        get() = appCtx.getPrefString(PreferKey.importLastGroup)
+        set(value) { appCtx.putPrefString(PreferKey.importLastGroup, value) }
+    var importLastGroupAdd: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.importLastGroupAdd, false)
+        set(value) { appCtx.putPrefBoolean(PreferKey.importLastGroupAdd, value) }
+
     val clickImgWay: String?
         get() = appCtx.getPrefString(PreferKey.clickImgWay)
 
@@ -673,6 +728,9 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
 
     val readAloudByMediaButton
         get() = appCtx.getPrefBoolean(PreferKey.readAloudByMediaButton, false)
+
+    val readAloudStartAtSentence
+        get() = appCtx.getPrefString(PreferKey.readAloudStart, "sentence") != "page"
 
     val readAloudFollowManualPage
         get() = appCtx.getPrefBoolean(PreferKey.readAloudFollowManualPage, false)
@@ -751,6 +809,10 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
 
     val autoBackup get() = appCtx.getPrefBoolean(PreferKey.autoBackup, true)
 
+    val autoBackupWebDav get() = appCtx.getPrefBoolean(PreferKey.autoBackupWebDav, true)
+
+    val autoBackupIntervalDays get() = appCtx.getPrefInt(PreferKey.autoBackupIntervalDays, 1).coerceAtLeast(1)
+
     val liveUpdateNotifications
         get() = appCtx.getPrefBoolean(PreferKey.liveUpdateNotifications, false)
 
@@ -795,6 +857,9 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
 
     val mouseWheelPage
         get() = appCtx.getPrefBoolean(PreferKey.mouseWheelPage, true)
+
+    val mouseWheelScrollSpeed
+        get() = appCtx.getPrefInt(PreferKey.mouseWheelScrollSpeed, 100).coerceIn(10, 400)
 
     val paddingDisplayCutouts
         get() = appCtx.getPrefBoolean(PreferKey.paddingDisplayCutouts, false)
@@ -971,6 +1036,12 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
         get() = appCtx.getPrefBoolean(PreferKey.enableMangaHorizontalScroll, false)
         set(value) {
             appCtx.putPrefBoolean(PreferKey.enableMangaHorizontalScroll, value)
+        }
+
+    var mangaRightToLeft
+        get() = appCtx.getPrefBoolean(PreferKey.mangaRightToLeft, false)
+        set(value) {
+            appCtx.putPrefBoolean(PreferKey.mangaRightToLeft, value)
         }
 
     var mangaColorFilter

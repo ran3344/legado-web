@@ -1,13 +1,12 @@
 package io.legado.app.ui.book.read
 
-import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.res.Configuration
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -38,6 +37,7 @@ import io.legado.app.constant.Status
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.replaceBookAfterSourceChange
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookHighlight
 import io.legado.app.data.entities.BookProgress
@@ -177,6 +177,7 @@ import androidx.lifecycle.Lifecycle
 import com.script.rhino.runScriptWithContext
 import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.paramPattern
 import io.legado.app.ui.login.SourceLoginJsExtensions
+import io.legado.app.ui.association.ImportBookSourceDialog
 
 /**
  * 阅读界面
@@ -211,7 +212,8 @@ class ReadBookActivity : BaseReadBookActivity(),
                     it[1] as Int,
                     highlightLayoutTitleLength,
                     (it[TocActivityResult.HIGHLIGHT_ANCHOR_TEXT_INDEX] as String)
-                        .takeIf(String::isNotEmpty)
+                        .takeIf(String::isNotEmpty),
+                    pdfPageIndex = (it[TocActivityResult.PDF_PAGE_INDEX] as Int).takeIf { page -> page >= 0 }
                 )
             }
         }
@@ -302,6 +304,10 @@ class ReadBookActivity : BaseReadBookActivity(),
     private val prevPageDebounce by lazy { Debounce { keyPage(PageDirection.PREV) } }
     private var bookChanged = false
     private var pageChanged = false
+    private val aloudControls by lazy {
+        ReadAloudControls(binding.readAloudFloatBarContainer) { updateReadAloudFloatBar() }
+    }
+    private val restoreAloudFollowRunnable = Runnable { restoreAloudFollowOnVisiblePage() }
     /** 最近一次朗读进度的章内字符位置; 供"回到朗读位置"在同章内即时跳转 */
     private var lastReadAloudChapterStart = -1
     private var lastReadAloudChapterIndex = -1
@@ -316,6 +322,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
     private var reviewSummaryAppliedKey: String? = null
     private var reviewSummaryLoadingKey: String? = null
+    private var lastReviewDialogRequestAt = 0L
     private var reviewSummaryRequestToken = 0L
     private val reviewSummaryCache = object :
         LinkedHashMap<String, ReviewRuleParser.SummaryResult>(8, 0.75f, true) {
@@ -340,6 +347,8 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBundle("pdfZoom", binding.readView.pdfZoom.save())
+        outState.putBundle("aloudControls", aloudControls.save())
         editingHighlight?.let { outState.putParcelable(STATE_EDITING_HIGHLIGHT, it) }
         super.onSaveInstanceState(outState)
     }
@@ -347,10 +356,23 @@ class ReadBookActivity : BaseReadBookActivity(),
     @SuppressLint("ClickableViewAccessibility")
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         super.onActivityCreated(savedInstanceState)
+        viewModel.pendingSourceReimport.observe(this) { showPendingSourceReimport() }
+        viewModel.resourceRefreshing.observe(this) { loading ->
+            if (binding.readView.pageFactory.isRefreshingResources != loading) {
+                if (loading) binding.readView.updateScrollReadPosition()
+                binding.readView.pageFactory.isRefreshingResources = loading
+                upContent()
+            }
+        }
+        binding.readView.pdfZoom.restore(savedInstanceState?.getBundle("pdfZoom"))
+        aloudControls.restore(savedInstanceState?.getBundle("aloudControls"))
         binding.cursorLeft.setColorFilter(accentColor)
         binding.cursorRight.setColorFilter(accentColor)
         binding.cursorLeft.setOnTouchListener(this)
         binding.cursorRight.setOnTouchListener(this)
+        binding.readAloudFloatBarContainer.ivPauseAloud.setOnClickListener {
+            if (BaseReadAloudService.pause) ReadAloud.resume(this) else ReadAloud.pause(this)
+        }
         binding.readAloudFloatBarContainer.llBackToSpeech.setOnClickListener {
             backToSpeakingPosition()
         }
@@ -463,12 +485,28 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
     }
 
+    override fun onPostResume() {
+        super.onPostResume()
+        showPendingSourceReimport()
+    }
+
+    private fun showPendingSourceReimport() {
+        val pending = viewModel.pendingSourceReimport.value ?: return
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) ||
+            supportFragmentManager.isStateSaved) return
+        viewModel.pendingSourceReimport.value = null
+        if (ReadBook.book?.bookUrl != pending.bookUrl || ReadBook.book?.origin != pending.sourceUrl) return
+        if (supportFragmentManager.findFragmentByTag("readerSourceReimport") != null) return
+        ImportBookSourceDialog(pending.json, reimportBookUrl = pending.bookUrl,
+            reimportSourceUrl = pending.sourceUrl).show(supportFragmentManager, "readerSourceReimport")
+    }
+
     override fun onPause() {
         super.onPause()
         binding.readView.cancelTouchGestures()
         autoPageStop()
         backupJob?.cancel()
-        updateScrollReadPosition()
+        binding.readView.updateScrollReadPosition()
         ReadBook.saveRead()
         ReadBook.cancelPreDownloadTask()
         unregisterReceiver(timeBatteryReceiver)
@@ -544,7 +582,13 @@ class ReadBookActivity : BaseReadBookActivity(),
 //                        item.isChecked = AppConfig.enableReview
 //                    }
 
-                    R.id.menu_reverse_content -> item.isVisible = onLine
+                    R.id.menu_reimport_source -> item.isVisible = onLine
+                    R.id.menu_reverse_content -> {
+                        item.isVisible = onLine
+                        item.isChecked = ReadBook.curTextChapter?.chapter?.takeIf {
+                            it.bookUrl == book.bookUrl && it.index == ReadBook.durChapterIndex
+                        }?.let { BookHelp.isContentReversed(book, it) } == true
+                    }
                     R.id.menu_del_ruby_tag -> item.isChecked = book.getDelTag(Book.rubyTag)
                     R.id.menu_del_h_tag -> item.isChecked = book.getDelTag(Book.hTag)
                 }
@@ -697,11 +741,16 @@ class ReadBookActivity : BaseReadBookActivity(),
             item(getString(R.string.menu_refresh_dur), "dur")
             item(getString(R.string.menu_refresh_after), "after")
             item(getString(R.string.menu_refresh_all), "all")
+            item(getString(R.string.menu_refresh_resources), "resources")
         }.show(anchor) { action ->
             when (action) {
                 "dur" -> refreshDurChapter()
                 "after" -> refreshAfterChapters()
                 "all" -> refreshAllChapters()
+                "resources" -> {
+                    resetReviewSummaryState()
+                    ReadBook.book?.let { viewModel.refreshResources(it, includePreloaded = true) }
+                }
             }
         }
     }
@@ -737,6 +786,10 @@ class ReadBookActivity : BaseReadBookActivity(),
             upContent()
         } else {
             ReadBook.book?.let {
+                if (viewModel.resourceThemeChanged(it)) {
+                    viewModel.refreshResources(it, includePreloaded = false)
+                    return@let
+                }
                 ReadBook.preserveCurrentPositionForRefresh()
                 ReadBook.curTextChapter = null
                 binding.readView.upContent()
@@ -796,6 +849,7 @@ class ReadBookActivity : BaseReadBookActivity(),
             R.id.menu_edit_content -> ContentEditDialog.newInstance()?.let {
                 showDialogFragment(it)
             }
+            R.id.menu_reimport_source -> viewModel.prepareSourceReimport()
             R.id.menu_update_toc -> ReadBook.book?.let {
                 if (it.isEpub) {
                     BookHelp.clearCache(it)
@@ -951,21 +1005,27 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     /**
-     * 鼠标滚轮事件
+     * 鼠标滚轮和手表旋钮事件
      */
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
-        if (0 != (event.source and InputDevice.SOURCE_CLASS_POINTER)) {
-            if (event.action == MotionEvent.ACTION_SCROLL) {
-                val axisValue = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
-                LogUtils.d("onGenericMotionEvent", "axisValue = $axisValue")
-                // 获得垂直坐标上的滚动方向
-                if (axisValue < 0.0f) { // 滚轮向下滚
-                    mouseWheelPage(PageDirection.NEXT, axisValue)
-                } else { // 滚轮向上滚
-                    mouseWheelPage(PageDirection.PREV, axisValue)
-                }
-                return true
+        if (event.action == MotionEvent.ACTION_SCROLL) {
+            val axisValue = when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                    event.isFromSource(InputDevice.SOURCE_ROTARY_ENCODER) ->
+                    event.getAxisValue(MotionEvent.AXIS_SCROLL)
+
+                event.source and InputDevice.SOURCE_CLASS_POINTER != 0 ->
+                    event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+
+                else -> return super.onGenericMotionEvent(event)
             }
+            if (!axisValue.isFinite() || axisValue == 0f) {
+                return super.onGenericMotionEvent(event)
+            }
+            LogUtils.d("onGenericMotionEvent", "axisValue = $axisValue")
+            val direction = if (axisValue < 0f) PageDirection.NEXT else PageDirection.PREV
+            mouseWheelPage(direction, axisValue)
+            return true
         }
         return super.onGenericMotionEvent(event)
     }
@@ -1032,6 +1092,14 @@ class ReadBookActivity : BaseReadBookActivity(),
         return super.onKeyUp(keyCode, event)
     }
 
+    // 按下点到光标图标中心的偏移
+    private var cursorTouchOffsetX = 0f
+    private var cursorTouchOffsetY = 0f
+
+    // 光标图标尺寸, 不含扩大触摸范围的内边距
+    private val View.iconWidth get() = width - paddingLeft - paddingRight
+    private val View.iconHeight get() = height - paddingTop - paddingBottom
+
     /**
      * view触摸,文字选择
      */
@@ -1041,30 +1109,39 @@ class ReadBookActivity : BaseReadBookActivity(),
             return false
         }
         when (event.action) {
-            MotionEvent.ACTION_DOWN -> textActionMenu.dismiss()
+            MotionEvent.ACTION_DOWN -> {
+                textActionMenu.dismiss()
+                cursorTouchOffsetX =
+                    SelectCursorGeometry.touchOffset(event.x, v.paddingLeft, v.iconWidth)
+                cursorTouchOffsetY =
+                    SelectCursorGeometry.touchOffset(event.y, v.paddingTop, v.iconHeight)
+            }
+
             MotionEvent.ACTION_MOVE -> {
+                val rawX = event.rawX + cursorTouchOffsetX
+                val rawY = event.rawY + cursorTouchOffsetY
                 when (v.id) {
                     R.id.cursor_left -> if (!readView.curPage.getReverseStartCursor()) {
                         readView.selectStartMoveAtRaw(
-                            event.rawX + cursorLeft.width,
-                            event.rawY - cursorLeft.height
+                            rawX + cursorLeft.iconWidth,
+                            rawY - cursorLeft.iconHeight
                         )
                     } else {
                         readView.selectEndMoveAtRaw(
-                            event.rawX - cursorRight.width,
-                            event.rawY - cursorRight.height
+                            rawX - cursorRight.iconWidth,
+                            rawY - cursorRight.iconHeight
                         )
                     }
 
                     R.id.cursor_right -> if (readView.curPage.getReverseEndCursor()) {
                         readView.selectStartMoveAtRaw(
-                            event.rawX + cursorLeft.width,
-                            event.rawY - cursorLeft.height
+                            rawX + cursorLeft.iconWidth,
+                            rawY - cursorLeft.iconHeight
                         )
                     } else {
                         readView.selectEndMoveAtRaw(
-                            event.rawX - cursorRight.width,
-                            event.rawY - cursorRight.height
+                            rawX - cursorRight.iconWidth,
+                            rawY - cursorRight.iconHeight
                         )
                     }
                 }
@@ -1083,8 +1160,9 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 更新文字选择开始位置
      */
     override fun upSelectedStart(x: Float, y: Float, top: Float) = binding.run {
-        cursorLeft.x = x - cursorLeft.width
-        cursorLeft.y = y
+        cursorLeft.x =
+            SelectCursorGeometry.startCursorX(x, cursorLeft.width, cursorLeft.paddingRight)
+        cursorLeft.y = SelectCursorGeometry.cursorY(y, cursorLeft.paddingTop)
         cursorLeft.visible(true)
         textMenuPosition.x = x
         textMenuPosition.y = top
@@ -1094,8 +1172,8 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 更新文字选择结束位置
      */
     override fun upSelectedEnd(x: Float, y: Float) = binding.run {
-        cursorRight.x = x
-        cursorRight.y = y
+        cursorRight.x = SelectCursorGeometry.endCursorX(x, cursorRight.paddingLeft)
+        cursorRight.y = SelectCursorGeometry.cursorY(y, cursorRight.paddingTop)
         cursorRight.visible(true)
     }
 
@@ -1192,6 +1270,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         highlightPopup?.dismiss()
         highlightPopup = popupActionMenu(this) {
             item(getString(R.string.edit), ACTION_HIGHLIGHT_RULE_EDIT)
+            item(getString(R.string.highlight_rule), ACTION_HIGHLIGHT_RULE_MANAGE)
             item(getString(R.string.highlight_rule_disable), ACTION_HIGHLIGHT_RULE_DISABLE)
             danger(ACTION_HIGHLIGHT_RULE_DISABLE)
         }.show(binding.textMenuPosition) { action ->
@@ -1200,6 +1279,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                     HighlightRuleEditDialog.edit(ruleId)
                 )
 
+                ACTION_HIGHLIGHT_RULE_MANAGE -> startActivity<HighlightRuleActivity>()
                 ACTION_HIGHLIGHT_RULE_DISABLE -> disableHighlightRule(ruleId)
             }
         }
@@ -1218,10 +1298,8 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     override fun onHighlightStyleChanged(style: HighlightStyle) {
         editingHighlight?.let { highlight ->
-            val visibleStyle = visibleHighlightStyle(style)
-            highlight.applyStyle(visibleStyle)
-            ReadBook.updateHighlight(highlight)
-            ReadBook.saveLastHighlightStyle(visibleStyle)
+            ReadBook.updateHighlightStyle(highlight, style)
+            ReadBook.saveLastHighlightStyle(style)
         }
     }
 
@@ -1252,6 +1330,10 @@ class ReadBookActivity : BaseReadBookActivity(),
      */
     override fun onMenuItemSelected(itemId: Int): Boolean {
         when (itemId) {
+            R.id.menu_aloud_from_here -> lifecycleScope.launch {
+                binding.readView.aloudStartSelect()
+            }
+
             R.id.menu_aloud -> when (AppConfig.contentSelectSpeakMod) {
                 1 -> lifecycleScope.launch {
                     binding.readView.aloudStartSelect()
@@ -1363,7 +1445,8 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
         if (binding.readView.isScroll) {
             // 滚动视图时滚动,否则翻页
-            (binding.readView.pageDelegate as? ScrollPageDelegate)?.curPage?.scroll((distance * 50).toInt())
+            val scrollDistance = (distance * (AppConfig.mouseWheelScrollSpeed / 2f)).toInt()
+            (binding.readView.pageDelegate as? ScrollPageDelegate)?.curPage?.scroll(scrollDistance)
         } else {
             keyPageDebounce(direction, mouseWheel = true, longPress = false)
         }
@@ -1462,8 +1545,9 @@ class ReadBookActivity : BaseReadBookActivity(),
         lifecycleScope.launch {
             val shouldResetPageOffset = resetPageOffset &&
                 (readPositionVersion == null || isReadPositionVersionCurrent(readPositionVersion))
-            binding.readView.cancelTouchGestures()
+            binding.readView.cancelTouchGesturesOnContentUpdate()
             binding.readView.upContent(relativePosition, shouldResetPageOffset)
+            scheduleAloudFollowCheck()
             observeBookmarks()
             upBookmarkIndicator()
             if (relativePosition == 0) {
@@ -1491,8 +1575,9 @@ class ReadBookActivity : BaseReadBookActivity(),
     ) = withContext(Main.immediate) {
         val shouldResetPageOffset = resetPageOffset &&
             (readPositionVersion == null || isReadPositionVersionCurrent(readPositionVersion))
-        binding.readView.cancelTouchGestures()
+        binding.readView.cancelTouchGesturesOnContentUpdate()
         binding.readView.upContent(relativePosition, shouldResetPageOffset)
+        scheduleAloudFollowCheck()
         observeBookmarks()
         upBookmarkIndicator()
         if (relativePosition == 0) {
@@ -1527,24 +1612,54 @@ class ReadBookActivity : BaseReadBookActivity(),
      */
     override fun pageChanged() {
         pageChanged = true
+        if (!isScroll) aloudControls.onMovement(100f)
         binding.readView.onPageChange()
         highlightPopup?.dismiss()
         handler.post {
             upBookmarkIndicator()
             upSeekBarProgress()
+            restoreAloudFollowOnVisiblePage()
         }
         executor.execute {
             startBackupJob()
         }
     }
 
-    private fun updateScrollReadPosition() {
-        if (!ReadBook.isScroll) return
-        if (ReadBook.msg != null || !ReadBook.isLayoutAvailable) return
-        val (chapterIndex, line) = binding.readView.getReadPosition() ?: return
-        if (chapterIndex == ReadBook.durChapterIndex) {
-            ReadBook.durChapterPos = line.chapterPosition
+    override fun onReadScroll(offset: Int) {
+        if (BaseReadAloudService.isRun && !isAutoPage) {
+            ReadAloud.detachReadAloudFollow()
+            aloudControls.onMovement(-offset * 100f / ChapterProvider.visibleHeight.coerceAtLeast(1))
+            scheduleAloudFollowCheck()
         }
+    }
+
+    fun showReadAloudControls(resetPosition: Boolean = false) {
+        aloudControls.reveal(resetPosition)
+        scheduleAloudFollowCheck()
+    }
+
+    private fun scheduleAloudFollowCheck() {
+        // Manual navigation emits detach before changing the displayed page.
+        handler.removeCallbacks(restoreAloudFollowRunnable)
+        handler.post(restoreAloudFollowRunnable)
+    }
+
+    private fun restoreAloudFollowOnVisiblePage() {
+        if (!BaseReadAloudService.isRun || ReadAloud.followReadAloudPosition ||
+            !getPrefBoolean(PreferKey.readAloudControlsRealtime, true)
+        ) return
+        val chapterStart = ReadAloud.readAloudChapterStart
+        val chapterIndex = ReadAloud.readAloudChapterIndex
+        if (chapterStart < 0 || chapterIndex != ReadBook.durChapterIndex) return
+        val chapter = ReadBook.curTextChapter ?: return
+        if (binding.readView.curPage.textPage !== chapter.getPage(ReadBook.durPageIndex)) return
+        val (visibleChapter, line) = binding.readView.getReadAloudPos() ?: return
+        if (visibleChapter != chapterIndex) return
+        val speakingPage = chapter.getPageByReadPos(chapterStart) ?: return
+        if (chapter.getPageByReadPos(line.chapterPosition) !== speakingPage) return
+        ReadAloud.restoreReadAloudFollow()
+        speakingPage.upPageAloudSpan(chapterStart - chapter.getReadLength(speakingPage.index))
+        binding.readView.upContent(resetPageOffset = false)
     }
 
     /**
@@ -1583,9 +1698,15 @@ class ReadBookActivity : BaseReadBookActivity(),
                 // 跨章：打开朗读所在章节并精确定位到朗读字符位置。
                 // openChapter 会先脱离跟随, 故在加载完成回调里再恢复跟随。
                 val durChapterPos = chapterStart.coerceAtLeast(0)
+                val bookUrl = ReadBook.book?.bookUrl
                 ReadBook.openChapter(speakingChapterIndex, durChapterPos) {
-                    ReadAloud.restoreReadAloudFollow()
-                    upTextChapterAloudSpan(chapterStart)
+                    if (BaseReadAloudService.isRun && ReadBook.book?.bookUrl == bookUrl &&
+                        ReadBook.durChapterIndex == speakingChapterIndex &&
+                        ReadAloud.readAloudChapterIndex == speakingChapterIndex
+                    ) {
+                        ReadAloud.restoreReadAloudFollow()
+                        upTextChapterAloudSpan(ReadAloud.readAloudChapterStart)
+                    }
                 }
             }
 
@@ -1629,8 +1750,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 withContext(IO) {
                     ReadBook.book?.migrateTo(book, toc)
                     book.removeType(BookType.updateError)
-                    ReadBook.book?.delete()
-                    appDb.bookDao.insert(book)
+                    replaceBookAfterSourceChange(ReadBook.book, book, toc)
                 }
                 onSuccess()
                 startActivityForBook(book)
@@ -1762,6 +1882,14 @@ class ReadBookActivity : BaseReadBookActivity(),
      */
     override fun showMoreSetting() {
         showDialogFragment<MoreConfigDialog>()
+    }
+
+    override fun showBookMemo() {
+        ReadBook.book?.let { book ->
+            showDialogFragment<io.legado.app.ui.widget.dialog.BookMemoDialog> {
+                putString("bookUrl", book.bookUrl)
+            }
+        }
     }
 
     override fun showSearchSetting() {
@@ -1948,9 +2076,23 @@ class ReadBookActivity : BaseReadBookActivity(),
             return
         }
         val source = ReadBook.bookSource ?: return
+        val reviewDialogTag = ReviewDetailDialog::class.simpleName
+        val fragmentManager = supportFragmentManager
+        fun showReviewDialog(dialog: ReviewDetailDialog) {
+            val now = SystemClock.uptimeMillis()
+            val taggedDialog = fragmentManager.findFragmentByTag(reviewDialogTag)
+            val existingDialog = taggedDialog != null || fragmentManager.fragments.any {
+                it is ReviewDetailDialog && !it.isRemoving
+            }
+            if (fragmentManager.isStateSaved || existingDialog ||
+                now - lastReviewDialogRequestAt < REVIEW_DIALOG_REQUEST_COOLDOWN_MS
+            ) return
+            lastReviewDialogRequestAt = now
+            dialog.showNow(fragmentManager, reviewDialogTag)
+        }
         if (source.isJsSource()) {
             val book = ReadBook.book ?: return
-            showDialogFragment(
+            showReviewDialog(
                 ReviewDetailDialog(
                     paragraphNum = paragraphNum,
                     totalCount = count,
@@ -1980,7 +2122,7 @@ class ReadBookActivity : BaseReadBookActivity(),
             return
         }
         val book = ReadBook.book ?: return
-        showDialogFragment(
+        showReviewDialog(
             ReviewDetailDialog(
                 paragraphNum = paragraphNum,
                 totalCount = count,
@@ -2293,21 +2435,21 @@ class ReadBookActivity : BaseReadBookActivity(),
                             ReadBook.openChapter(index, line.chapterPosition, false) {
                                 ReadBook.readAloud(
                                     startPos = line.pagePosition,
-                                    rewindToSentenceStart = true
+                                    rewindToSentenceStart = AppConfig.readAloudStartAtSentence
                                 )
                             }
                         } else {
                             ReadBook.durChapterPos = line.chapterPosition
                             ReadBook.readAloud(
                                 startPos = line.pagePosition,
-                                rewindToSentenceStart = true
+                                rewindToSentenceStart = AppConfig.readAloudStartAtSentence
                             )
                         }
                     } else {
-                        ReadBook.readAloud(rewindToSentenceStart = true)
+                        ReadBook.readAloud(rewindToSentenceStart = AppConfig.readAloudStartAtSentence)
                     }
                 } else {
-                    ReadBook.readAloud(rewindToSentenceStart = true)
+                    ReadBook.readAloud(rewindToSentenceStart = AppConfig.readAloudStartAtSentence)
                 }
             }
 
@@ -2322,18 +2464,18 @@ class ReadBookActivity : BaseReadBookActivity(),
                             ReadBook.openChapter(index, line.chapterPosition, false) {
                                 ReadBook.readAloud(
                                     startPos = line.pagePosition,
-                                    rewindToSentenceStart = true
+                                    rewindToSentenceStart = AppConfig.readAloudStartAtSentence
                                 )
                             }
                         } else {
                             ReadBook.durChapterPos = line.chapterPosition
                             ReadBook.readAloud(
                                 startPos = line.pagePosition,
-                                rewindToSentenceStart = true
+                                rewindToSentenceStart = AppConfig.readAloudStartAtSentence
                             )
                         }
                     } else {
-                        ReadBook.readAloud(rewindToSentenceStart = true)
+                        ReadBook.readAloud(rewindToSentenceStart = AppConfig.readAloudStartAtSentence)
                     }
                 } else {
                     ReadAloud.resume(this)
@@ -2510,6 +2652,7 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     override fun onMenuHide() {
         binding.readView.autoPager.resume()
+        aloudControls.reveal()
         updateReadAloudFloatBar(menuHiding = true)
     }
 
@@ -2517,69 +2660,12 @@ class ReadBookActivity : BaseReadBookActivity(),
         menuShowing: Boolean = false,
         menuHiding: Boolean = false,
     ) {
-        val floatBarBinding = binding.readAloudFloatBarContainer
         val menuVisible = when {
             menuShowing -> true
             menuHiding -> bottomDialog > 0 || binding.searchMenu.bottomMenuVisible
             else -> menuLayoutIsVisible
         }
-        val shouldShow = ReadAloudBarVisibility.shouldShow(
-            isRun = BaseReadAloudService.isRun,
-            following = ReadAloud.followReadAloudPosition,
-            menuVisible = menuVisible,
-        )
-
-        if (shouldShow) {
-            val backgroundColor = bottomBackground
-            val foregroundColor = getPrimaryTextColor(ColorUtils.isColorLight(backgroundColor))
-            (floatBarBinding.readAloudFloatBar.background.mutate() as? GradientDrawable)?.apply {
-                setColor(backgroundColor)
-                val strokeColor = if (AppConfig.isEInkMode) {
-                    foregroundColor
-                } else {
-                    ColorUtils.withAlpha(foregroundColor, 0.25f)
-                }
-                setStroke(1.dpToPx(), strokeColor)
-            }
-            floatBarBinding.ivBackToSpeech.setColorFilter(foregroundColor)
-            floatBarBinding.tvBackToSpeech.setTextColor(foregroundColor)
-            floatBarBinding.ivReadFromHere.setColorFilter(foregroundColor)
-            floatBarBinding.tvReadFromHere.setTextColor(foregroundColor)
-            floatBarBinding.vBarDivider.setBackgroundColor(
-                ColorUtils.withAlpha(foregroundColor, 0.3f)
-            )
-        }
-
-        val floatBar = floatBarBinding.readAloudFloatBar
-        val settledShown = floatBar.isVisible && floatBar.alpha == 1f
-        if (shouldShow && settledShown) return
-        if (!shouldShow && floatBar.isGone) return
-        floatBar.animate().cancel()
-
-        val animationsEnabled = !AppConfig.isEInkMode &&
-            (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || ValueAnimator.areAnimatorsEnabled())
-        if (!animationsEnabled) {
-            floatBar.alpha = 1f
-            floatBar.isVisible = shouldShow
-        } else if (shouldShow) {
-            if (floatBar.isGone) {
-                floatBar.alpha = 0f
-                floatBar.isVisible = true
-            }
-            floatBar.animate()
-                .alpha(1f)
-                .setDuration(180)
-                .start()
-        } else {
-            floatBar.animate()
-                .alpha(0f)
-                .setDuration(180)
-                .withEndAction {
-                    floatBar.isGone = true
-                    floatBar.alpha = 1f
-                }
-                .start()
-        }
+        aloudControls.update(menuVisible)
     }
 
     override fun onLayoutPageCompleted(index: Int, page: TextPage) {
@@ -2848,15 +2934,16 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     override fun onDestroy() {
         super.onDestroy()
+        aloudControls.dispose()
         tts?.clearTts()
         textActionMenu.dismiss()
         popupAction.dismiss()
         readerOverflowPopup?.dismiss()
         highlightPopup?.dismiss()
         binding.readView.onDestroy()
-        ReadBook.unregister(this)
+        val wasCurrentReader = ReadBook.unregister(this)
         handler.removeCallbacksAndMessages(null) // 清理Handler消息
-        if (!ReadBook.inBookshelf && !isChangingConfigurations) {
+        if (wasCurrentReader && !ReadBook.inBookshelf && !isChangingConfigurations) {
             viewModel.removeFromBookshelf(null)
         }
         if (!BuildConfig.DEBUG) {
@@ -2876,7 +2963,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
         observeEvent<ArrayList<Int>>(EventBus.UP_CONFIG) { values ->
             if (5 in values && isInitFinish) {
-                updateScrollReadPosition()
+                binding.readView.updateScrollReadPosition(preserveText = true)
             }
             values.forEach { value ->
                 when (value) {
@@ -2923,7 +3010,11 @@ class ReadBookActivity : BaseReadBookActivity(),
         observeEventSticky<Int>(EventBus.TTS_PROGRESS) { chapterStart ->
             lastReadAloudChapterStart = chapterStart
             lastReadAloudChapterIndex = ReadAloud.readAloudChapterIndex
-            lifecycleScope.launch(IO) {
+            if (!ReadAloud.followReadAloudPosition) {
+                scheduleAloudFollowCheck()
+                return@observeEventSticky
+            }
+            lifecycleScope.launch(Main.immediate) {
                 if (BaseReadAloudService.shouldApplySpeechProgressToVisibleReader(
                         isSpeechPlaying = BaseReadAloudService.isPlay()
                     )
@@ -2932,9 +3023,15 @@ class ReadBookActivity : BaseReadBookActivity(),
                         ReadBook.durChapterPos = chapterStart
                         val pageIndex = ReadBook.durPageIndex
                         val aloudSpanStart = chapterStart - textChapter.getReadLength(pageIndex)
-                        textChapter.getPage(pageIndex)
-                            ?.upPageAloudSpan(aloudSpanStart)
-                        upContent()
+                        val page = textChapter.getPage(pageIndex)
+                        page?.upPageAloudSpan(aloudSpanStart)
+                        if (readView.isTouching && readView.curPage.textPage === page) {
+                            // Same-page speech ranges must not cancel the user's pending swipe.
+                            readView.curPage.invalidateContentView()
+                            readView.submitRenderTask()
+                        } else {
+                            upContent()
+                        }
                     }
                 }
             }
@@ -2998,6 +3095,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     companion object {
+        private const val REVIEW_DIALOG_REQUEST_COOLDOWN_MS = 1500L
         const val RESULT_DELETED = 100
         private const val ACTION_READER_ITEM_PREFIX = "readerItem:"
         private const val ACTION_READER_MORE = "readerMore"
@@ -3008,6 +3106,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         private const val ACTION_HIGHLIGHT_COPY = "highlightCopy"
         private const val ACTION_HIGHLIGHT_DELETE = "highlightDelete"
         private const val ACTION_HIGHLIGHT_RULE_EDIT = "highlightRuleEdit"
+        private const val ACTION_HIGHLIGHT_RULE_MANAGE = "highlightRuleManage"
         private const val ACTION_HIGHLIGHT_RULE_DISABLE = "highlightRuleDisable"
         private const val STATE_EDITING_HIGHLIGHT = "editingHighlight"
     }
@@ -3016,4 +3115,27 @@ class ReadBookActivity : BaseReadBookActivity(),
 
 internal fun visibleHighlightStyle(style: HighlightStyle?): HighlightStyle {
     return style?.takeUnless { it.isEmpty } ?: HighlightStyles.presets.first()
+}
+
+/**
+ * 文字选择光标的位置换算
+ * 光标视图在选区外侧和下方留有内边距以扩大触摸范围, 图标尖端仍对齐选区边界
+ */
+internal object SelectCursorGeometry {
+
+    /** 开始光标图标的右上角对齐选区起点 */
+    fun startCursorX(anchorX: Float, viewWidth: Int, paddingRight: Int): Float =
+        anchorX - viewWidth + paddingRight
+
+    /** 结束光标图标的左上角对齐选区终点 */
+    fun endCursorX(anchorX: Float, paddingLeft: Int): Float = anchorX - paddingLeft
+
+    fun cursorY(anchorY: Float, paddingTop: Int): Float = anchorY - paddingTop
+
+    /**
+     * 按下点到图标中心的偏移, 拖动时加上该偏移,
+     * 按在图标外的触摸范围内也等同于按住图标中心, 选区不会跳动
+     */
+    fun touchOffset(touch: Float, leadingPadding: Int, iconSize: Int): Float =
+        leadingPadding + iconSize / 2f - touch
 }

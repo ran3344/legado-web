@@ -17,6 +17,8 @@ class PredictiveBackTest {
         )
 
         assertFalse(blanketFinishCallback.containsMatchIn(baseActivity))
+        assertTrue(baseActivity.contains("OnBackInvokedCallback { onBackPressedDispatcher.onBackPressed() }"))
+        assertFalse(baseActivity.contains("OnBackInvokedCallback { finish() }"))
 
         val manifest = File("src/main/AndroidManifest.xml").readText()
         assertTrue(manifest.contains("""android:enableOnBackInvokedCallback="true"""))
@@ -34,6 +36,10 @@ class PredictiveBackTest {
 
     @Test
     fun `activities intercept back before finish may defer closing`() {
+        // A callback may close a text-selection menu before invoking the guarded finish().
+        val guardedFinishCallback = Regex(
+            """onBackPressedDispatcher\.addCallback\(this\)\s*\{[^}]*\bfinish\(\)"""
+        )
         listOf(
             "src/main/java/io/legado/app/ui/rss/source/edit/RssSourceEditActivity.kt",
             "src/main/java/io/legado/app/ui/book/source/edit/BookSourceEditActivity.kt",
@@ -41,10 +47,21 @@ class PredictiveBackTest {
             "src/main/java/io/legado/app/ui/autoTask/AutoTaskEditActivity.kt",
             "src/main/java/io/legado/app/ui/book/audio/AudioPlayActivity.kt",
             "src/main/java/io/legado/app/ui/book/manga/ReadMangaActivity.kt",
+            "src/main/java/io/legado/app/ui/replace/edit/ReplaceEditActivity.kt",
         ).forEach { path ->
             val source = File(path).readText()
-            assertTrue(source.contains("onBackPressedDispatcher.addCallback(this) { finish() }"))
+            assertTrue(guardedFinishCallback.containsMatchIn(source))
             assertTrue(source.contains("override fun finish()"))
         }
+    }
+
+    @Test
+    fun `replace editor handles cursor only result after discarded code edit`() {
+        val source = File(
+            "src/main/java/io/legado/app/ui/replace/edit/ReplaceEditActivity.kt"
+        ).readText()
+
+        assertTrue(source.contains("it.hasExtra(\"cursorPosition\")"))
+        assertTrue(source.contains("else if (fieldId != null && cursorPosition != null)"))
     }
 }

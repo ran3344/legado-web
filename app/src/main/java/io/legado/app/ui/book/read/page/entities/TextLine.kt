@@ -5,10 +5,12 @@ import android.graphics.Canvas
 import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.Paint.FontMetrics
 import android.os.Build
 import androidx.annotation.Keep
 import io.legado.app.help.HighlightGeometry
+import io.legado.app.help.HighlightStyle
 import io.legado.app.help.PaintPool
 import io.legado.app.help.book.isImage
 import io.legado.app.help.config.AppConfig
@@ -85,6 +87,11 @@ data class TextLine(
     var isReviewTrailingInsetApplied: Boolean = false,
     var hangingPunctuation: Boolean = false,
     var compressedPunctuation: Boolean = false,
+    var highlightReviewGap: Float? = null,
+    var highlightReviewWidth: Float = 0f,
+    var highlightLeadingSpace: Float = 0f,
+    var highlightTrailingSpace: Float = 0f,
+    var hasHighlightSpacing: Boolean = false,
 ) {
 
     val columns: List<BaseColumn> get() = textColumns
@@ -115,7 +122,7 @@ data class TextLine(
     val hasOverflowTextStyle: Boolean
         get() = styledColumnCount > 0 && textColumns.any {
             (it as? TextBaseColumn)?.highlightStyle?.let { style ->
-                style.shadow != null || style.resolvedFontPath.isNotEmpty()
+                style.shadow != null || style.resolvedFontPath.isNotEmpty() || style.changesTextMetrics
             } == true
         }
     val canvasRecorder = CanvasRecorderFactory.create()
@@ -124,9 +131,9 @@ data class TextLine(
     var styledColumnCount = 0
     var isReadAloud: Boolean = false
         set(value) {
-            if (field != value) {
-                invalidate()
-            }
+            if (field == value) return
+            invalidate()
+            columns.filterIsInstance<TextBaseColumn>().forEach { it.isReadAloud = value }
             if (value) {
                 textPage.hasReadAloudSpan = true
             }
@@ -291,7 +298,10 @@ data class TextLine(
         if (fillColumnCount > 0) {
             drawHighlightFills(canvas)
         }
-        if (checkFastDraw()) {
+        if (styledColumnCount > 0) {
+            drawHighlightRuns(canvas, underlineBeforeText = true)
+        }
+        if (checkFastDraw() && (!isReadAloud || columns.filterIsInstance<TextBaseColumn>().all { it.isReadAloud })) {
             fastDrawTextLine(view, canvas)
         } else {
             for (i in columns.indices) {
@@ -308,7 +318,13 @@ data class TextLine(
             underlinePaint.set(ChapterProvider.contentPaint)
             underlinePaint.strokeWidth = 1.dpToPx().toFloat()
             val lineY = height - 1.dpToPx()
-            canvas.drawLine(lineStart + indentWidth, lineY, lineEnd, lineY, underlinePaint)
+            if (searchResultColumnCount > 0) {
+                canvas.drawLine(lineStart + indentWidth, lineY, lineEnd, lineY, underlinePaint)
+            } else {
+                columns.filterIsInstance<TextBaseColumn>().filter { it.isReadAloud }.forEach {
+                    canvas.drawLine(it.start, lineY, it.end, lineY, underlinePaint)
+                }
+            }
             PaintPool.recycle(underlinePaint)
         }
 
@@ -454,6 +470,41 @@ data class TextLine(
         canvas.drawPath(path, paint)
     }
 
+    private fun highlightInkEdges(start: Int, end: Int, style: HighlightStyle,
+        band: HighlightGeometry.Band? = null, radius: Float = 0f): Pair<Float, Float> {
+        val requested = checkNotNull(style.resolvedHorizontalPadding).dpToPx()
+        val baseline = lineBase - lineTop
+        var left = Float.POSITIVE_INFINITY
+        var right = Float.NEGATIVE_INFINITY
+        val ink = Rect()
+        val base = PaintPool.obtain()
+        try {
+            for (index in start until end) {
+                val column = columns[index] as TextBaseColumn
+                val columnStyle = checkNotNull(column.highlightStyle)
+                base.set(if (column is TextHtmlColumn) ChapterProvider.contentPaint else textPaint)
+                if (column is TextHtmlColumn) base.textSize = column.mTextSize
+                val paint = HighlightDraw.obtainTextPaint(base, columnStyle, 0, column.charData)
+                try {
+                    paint.getTextBounds(column.charData, 0, column.charData.length, ink)
+                    val minimum = if (band != null && radius > 0f) HighlightGeometry.pillClearance(radius,
+                        baseline + ink.top, baseline + ink.bottom, band.top, band.bottom, 1f.dpToPx())
+                        else if (columnStyle.box != null) 1f.dpToPx() else 0f
+                    val clearance = maxOf(requested, minimum)
+                    val origin = column.start + ((column as? TextColumn)?.drawOffset ?: 0f) +
+                        if (atLeastApi35) paint.letterSpacing * paint.textSize * 0.5f else 0f
+                    left = minOf(left, if (ink.isEmpty) column.start - clearance else origin + ink.left - clearance)
+                    right = maxOf(right, if (ink.isEmpty) column.end + clearance else origin + ink.right + clearance)
+                } finally { HighlightDraw.recycleTextPaint(paint) }
+            }
+        } finally { PaintPool.recycle(base) }
+        // Two complete end caps need at least their combined width even for a one-glyph run.
+        val extra = (radius * 2f - (right - left)).coerceAtLeast(0f) / 2f
+        left -= extra
+        right += extra
+        return left to right
+    }
+
     private fun drawHighlightFills(canvas: Canvas) {
         val baseline = lineBase - lineTop
         val baseTextSize = textPaint.textSize
@@ -467,15 +518,14 @@ data class TextLine(
             }
             val fill = style.fill
             val shape = style.resolvedFillShape
-            val textSize = (first as? TextHtmlColumn)?.mTextSize ?: baseTextSize
+            val textSize = HighlightDraw.textSize((first as? TextHtmlColumn)?.mTextSize ?: baseTextSize, style)
             var endIndex = index + 1
             while (endIndex < columns.size) {
                 val next = columns[endIndex] as? TextBaseColumn ?: break
                 val nextStyle = next.highlightStyle ?: break
-                val nextTextSize = (next as? TextHtmlColumn)?.mTextSize ?: baseTextSize
+                val nextTextSize = HighlightDraw.textSize((next as? TextHtmlColumn)?.mTextSize ?: baseTextSize, nextStyle)
                 if (
-                    nextStyle.fill == fill &&
-                    nextStyle.resolvedFillShape == shape &&
+                    style.hasSameFillGeometry(nextStyle) &&
                     nextTextSize == textSize
                 ) {
                     endIndex++
@@ -491,20 +541,78 @@ data class TextLine(
                 shape,
                 1f.dpToPx()
             )
+            val padding = if (shape == HighlightStyle.FillShape.PILL) {
+                (band.bottom - band.top) / 2f * style.resolvedPillPaddingScale
+            } else 0f
+            val explicitEdges = style.resolvedHorizontalPadding?.let {
+                highlightInkEdges(index, endIndex, style, band, padding)
+            }
+            var left = explicitEdges?.first ?: (first.start - padding)
+            var right = explicitEdges?.second ?: (last.end + padding)
+            var leftRadius = padding
+            var rightRadius = padding
+            if (padding > 0f) {
+                // Construct the complete caps inside the available space, including across spaces.
+                for (i in index - 1 downTo 0) {
+                    val column = columns[i]
+                    if (column.end <= left) break
+                    if (column !is TextBaseColumn) {
+                        left = maxOf(left, column.end)
+                        break
+                    }
+                }
+                for (i in endIndex until columns.size) {
+                    val column = columns[i]
+                    if (column.start >= right) break
+                    if (column !is TextBaseColumn) {
+                        right = minOf(right, column.start)
+                        break
+                    }
+                }
+                val ink = Rect()
+                val border = 1f.dpToPx()
+                val basePaint = PaintPool.obtain()
+                for (i in index until endIndex) {
+                    val column = columns[i] as TextBaseColumn
+                    basePaint.set(if (column is TextHtmlColumn) ChapterProvider.contentPaint else textPaint)
+                    if (column is TextHtmlColumn) basePaint.textSize = column.mTextSize
+                    val paint = HighlightDraw.obtainTextPaint(basePaint, column.highlightStyle!!, 0, column.charData)
+                    paint.getTextBounds(column.charData, 0, column.charData.length, ink)
+                    if (!ink.isEmpty) {
+                        val offset = (column as? TextColumn)?.drawOffset ?: 0f
+                        val origin = column.start + offset +
+                            if (atLeastApi35) paint.letterSpacing * paint.textSize * 0.5f else 0f
+                        val inkTop = baseline + ink.top
+                        val inkBottom = baseline + ink.bottom
+                        leftRadius = minOf(leftRadius, HighlightGeometry.pillRadiusX(
+                            padding, origin + ink.left - left, inkTop, inkBottom,
+                            band.top, band.bottom, border
+                        ))
+                        rightRadius = minOf(rightRadius, HighlightGeometry.pillRadiusX(
+                            padding, right - origin - ink.right, inkTop, inkBottom,
+                            band.top, band.bottom, border
+                        ))
+                    }
+                    HighlightDraw.recycleTextPaint(paint)
+                }
+                PaintPool.recycle(basePaint)
+            }
             HighlightDraw.drawFillRun(
                 canvas,
-                first.start,
-                last.end,
+                left,
+                right,
                 band.top,
                 band.bottom,
                 fill,
-                shape
+                shape,
+                leftRadius,
+                rightRadius
             )
             index = endIndex
         }
     }
 
-    private fun drawHighlightRuns(canvas: Canvas) {
+    private fun drawHighlightRuns(canvas: Canvas, underlineBeforeText: Boolean = false) {
         val baseline = lineBase - lineTop
         val baseTextSize = textPaint.textSize
         val fontMetrics = textFontMetrics
@@ -519,24 +627,25 @@ data class TextLine(
                 index++
                 continue
             }
-            val sizeSensitive = strike != null || box != null
-            val textSize = if (sizeSensitive) {
-                (first as? TextHtmlColumn)?.mTextSize ?: baseTextSize
-            } else {
-                baseTextSize
-            }
+            val sizeSensitive = strike != null || box != null || style.resolvedHorizontalPadding != null
+            val textSize = HighlightDraw.textSize(
+                if (sizeSensitive) (first as? TextHtmlColumn)?.mTextSize ?: baseTextSize else baseTextSize, style)
             var endIndex = index + 1
             while (endIndex < columns.size) {
                 val next = columns[endIndex] as? TextBaseColumn ?: break
                 val nextStyle = next.highlightStyle
                 val sameTextSize = !sizeSensitive ||
-                    ((next as? TextHtmlColumn)?.mTextSize ?: baseTextSize) == textSize
+                    HighlightDraw.textSize((next as? TextHtmlColumn)?.mTextSize ?: baseTextSize, nextStyle) == textSize
                 if (
                     nextStyle != null &&
                     nextStyle.underline == underline &&
                     nextStyle.strike == strike &&
                     nextStyle.box == box &&
                     nextStyle.textColor == style.textColor &&
+                    (if (style.resolvedHorizontalPadding != null || nextStyle.resolvedHorizontalPadding != null)
+                        nextStyle == style else true) &&
+                    (!(style.changesTextMetrics || nextStyle.changesTextMetrics) ||
+                        nextStyle.resolvedFontPath == style.resolvedFontPath) &&
                     sameTextSize
                 ) {
                     endIndex++
@@ -547,17 +656,23 @@ data class TextLine(
             val last = columns[endIndex - 1] as TextBaseColumn
             val fallbackColor = style.textColor.takeIf { it != 0 } ?: textColor
             val metricScale = textSize / baseTextSize
+            val customMetrics = if (style.changesTextMetrics) {
+                val base = Paint(textPaint).apply { this.textSize = (first as? TextHtmlColumn)?.mTextSize ?: baseTextSize }
+                val paint = HighlightDraw.obtainTextPaint(base, style, fallbackColor, first.charData)
+                try { paint.fontMetrics } finally { HighlightDraw.recycleTextPaint(paint) }
+            } else null
+            val explicitEdges = style.resolvedHorizontalPadding?.let { highlightInkEdges(index, endIndex, style) }
             HighlightDraw.drawRun(
                 canvas,
-                first.start,
-                last.end,
+                explicitEdges?.first ?: first.start,
+                explicitEdges?.second ?: last.end,
                 baseline,
                 height,
-                fontMetrics.ascent * metricScale,
-                fontMetrics.descent * metricScale,
-                underline,
-                strike,
-                box,
+                customMetrics?.ascent ?: (fontMetrics.ascent * metricScale),
+                customMetrics?.descent ?: (fontMetrics.descent * metricScale),
+                underline.takeIf { underlineBeforeText },
+                strike.takeIf { !underlineBeforeText },
+                box.takeIf { !underlineBeforeText },
                 fallbackColor
             )
             index = endIndex

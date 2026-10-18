@@ -11,7 +11,7 @@ import io.legado.app.help.source.SourceHelp
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
 import io.legado.app.utils.cnCompare
-import io.legado.app.utils.mergeFilteredOrder
+import io.legado.app.utils.moveRelativeTo
 import io.legado.app.utils.normalizeFileName
 import io.legado.app.utils.outputStream
 import io.legado.app.utils.renameGroupExact
@@ -61,27 +61,17 @@ class BookSourceViewModel(application: Application) : BaseViewModel(application)
         execute { appDb.bookSourceDao.update(*bookSource) }
     }
 
-    fun upOrder(items: List<BookSourcePart>, resetAll: Boolean, sortAscending: Boolean) {
-        if (items.isEmpty()) return
-        execute {
+    fun move(sourceUrl: String, targetUrl: String, after: Boolean, onFinally: () -> Unit = {}) {
+        executeLazy {
             appDb.runInTransaction {
-                if (resetAll || appDb.bookSourceDao.hasDuplicateOrder) {
-                    val orderedItems = when {
-                        resetAll && !sortAscending -> items.asReversed()
-                        resetAll -> items
-                        else -> items.sortedBy { it.customOrder }
-                    }
-                    val reordered = mergeFilteredOrder(
-                        appDb.bookSourceDao.allPart,
-                        orderedItems,
-                    ) { it.bookSourceUrl }
-                    reordered.forEachIndexed { index, source -> source.customOrder = index }
-                    appDb.bookSourceDao.upOrder(reordered)
-                } else {
-                    appDb.bookSourceDao.upOrder(items)
-                }
+                val current = appDb.bookSourceDao.allPart
+                val reordered = moveRelativeTo(current, sourceUrl, targetUrl, after) { it.bookSourceUrl }
+                if (reordered == current) return@runInTransaction
+                appDb.bookSourceDao.upOrder(reordered.mapIndexed { index, source ->
+                    source.copy(customOrder = index)
+                })
             }
-        }
+        }.onFinally { onFinally() }.start()
     }
 
     fun enable(enable: Boolean, items: List<BookSourcePart>) {
@@ -176,18 +166,8 @@ class BookSourceViewModel(application: Application) : BaseViewModel(application)
         execute {
             val selection = adapter.selection
             val selectionSize = selection.size
-            val selectedRate = selectionSize.toFloat() / adapter.itemCount.toFloat()
-            val sources = if (selectedRate == 1f) {
-                getBookSources(searchKey, sortAscending, sort)
-            } else if (selectedRate < 0.3) {
-                selection.toBookSource()
-            } else {
-                val keys = selection.map { it.bookSourceUrl }.toHashSet()
-                val bookSources = getBookSources(searchKey, sortAscending, sort)
-                bookSources.filter {
-                    keys.contains(it.bookSourceUrl)
-                }
-            }
+            // Export exactly what is visible and selected, including status/detail filters.
+            val sources = selection.toBookSource()
             val name = if (selectionSize == 1) {
                 "bookSource_${selection.first().bookSourceName.normalizeFileName()}.json"
             } else {

@@ -14,6 +14,7 @@ plugins {
     alias libs.plugins.google.services
 }
 apply from: 'download.gradle'
+apply from: 'cronet-loader.gradle'
 
 static def releaseTime() {
     return new Date().format("yyMMddHH", TimeZone.getTimeZone("GMT+8"))
@@ -296,7 +297,9 @@ dependencies {
     //网络
     implementation(libs.okhttp)
     implementation(libs.brotli.dec)
-    implementation(fileTree(dir: 'cronetlib', include: ['*.jar', '*.aar']))
+    implementation(fileTree(dir: 'cronetlib', include: ['*.jar', '*.aar'],
+            exclude: ['cronet_impl_native_java.jar']))
+    implementation(dynamicCronetJar)
 
     implementation(libs.protobuf.javalite)
 
@@ -351,6 +354,11 @@ dependencies {
     //noinspection GradleDependency,GradlePackageUpdate
     implementation(libs.hutool.crypto)
     implementation(libs.bouncycastle.provider)
+    implementation(libs.bouncycastle.pkix)
+    implementation(libs.pdfbox.android) {
+        // PDFBox's older jdk15to18 artifacts duplicate the project's jdk18on classes.
+        exclude group: 'org.bouncycastle'
+    }
 
     //firebase, 崩溃统计和性能统计
     implementation platform(libs.firebase.bom)

@@ -1,5 +1,6 @@
 package io.legado.app.ui.association
 
+import io.legado.app.constant.AppPattern.jsFileRegex
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -47,13 +48,18 @@ class SharedImportAssociationTest {
     }
 
     @Test
-    fun `share import accepts only json compatible mime types`() {
+    fun `share import accepts supported json book and archive mime types`() {
         assertTrue(isSupportedSharedImportMimeType("text/plain"))
         assertTrue(isSupportedSharedImportMimeType("text/*"))
         assertTrue(isSupportedSharedImportMimeType("application/json"))
         assertTrue(isSupportedSharedImportMimeType("APPLICATION/JSON"))
         assertFalse(isSupportedSharedImportMimeType("application/javascript"))
-        assertFalse(isSupportedSharedImportMimeType("application/octet-stream"))
+        assertTrue(isSupportedSharedImportMimeType("application/octet-stream"))
+        assertTrue(isSupportedSharedImportMimeType("application/epub+zip"))
+        assertTrue(isSupportedSharedImportMimeType("application/pdf"))
+        assertTrue(isSupportedSharedImportMimeType("application/zip"))
+        assertTrue(isSupportedSharedImportMimeType("application/x-zip-compressed"))
+        assertFalse(isSupportedSharedImportMimeType("image/png"))
         assertFalse(isSupportedSharedImportMimeType(null))
     }
 
@@ -82,9 +88,9 @@ class SharedImportAssociationTest {
         assertTrue(shareFilter.contains("android.intent.action.SEND"))
         assertTrue(shareFilter.contains("android:mimeType=\"text/plain\""))
         assertTrue(shareFilter.contains("android:mimeType=\"application/json\""))
-        assertFalse(shareFilter.contains("SEND_MULTIPLE"))
+        assertTrue(manifest.contains("android.intent.action.SEND_MULTIPLE"))
         assertFalse(shareFilter.contains("javascript"))
-        assertFalse(shareFilter.contains("application/octet-stream"))
+        assertTrue(shareFilter.contains("application/octet-stream"))
         assertTrue(activity.contains("IntentCompat.getParcelableExtra("))
         assertTrue(activity.contains("Intent.EXTRA_STREAM"))
         assertFalse(activity.contains("intent.clipData"))
@@ -100,8 +106,9 @@ class SharedImportAssociationTest {
         assertTrue(viewModel.contains("if (initialIntentDispatched) return false"))
         assertTrue(activity.contains("supportFragmentManager.fragments.any"))
         assertTrue(activity.contains("fragment is DialogFragment"))
-        assertTrue(sharedUri.contains("require(uri.isContentScheme() && uri.canRead())"))
-        assertTrue(sharedUri.contains("importJson(uri)"))
+        assertTrue(sharedUri.contains("require(uri.isContentScheme())"))
+        assertTrue(sharedUri.contains("uri.inputStream(context).getOrThrow().use { }"))
+        assertTrue(sharedUri.contains("dispatchFile(FileDoc.fromUri(uri, false), shared = true)"))
         assertFalse(sharedUri.contains("dispatchIntent(uri)"))
         assertTrue(sharedText.contains("File.createTempFile("))
         assertTrue(sharedText.contains("context.cacheDir"))
@@ -118,9 +125,34 @@ class SharedImportAssociationTest {
         assertTrue(viewModel.contains("sharedImportFile?.delete()"))
     }
 
+    @Test
+    fun `view association advertises and routes JavaScript source files`() {
+        val manifest = projectFile("src/main/AndroidManifest.xml")
+        val viewModel = projectFile(
+            "src/main/java/io/legado/app/ui/association/FileAssociationViewModel.kt"
+        )
+        val knownMimeFilter = manifest
+            .substringAfter("<!-- VIEW (Open with) action -->")
+            .substringBefore("<!-- Works when an app doesn't know")
+
+        assertTrue(knownMimeFilter.contains("android:mimeType=\"application/javascript\""))
+        assertTrue(knownMimeFilter.contains("android:mimeType=\"text/javascript\""))
+        assertTrue(knownMimeFilter.contains("android:mimeType=\"application/x-javascript\""))
+        assertTrue(jsFileRegex.matches("source.js"))
+        assertTrue(jsFileRegex.matches("SOURCE.JS"))
+        assertFalse(jsFileRegex.matches("source.js.bak"))
+        assertTrue(viewModel.contains("AppPattern.jsFileRegex"))
+        assertTrue(
+            viewModel.indexOf("fileDoc.name.matches(jsFileRegex)") <
+                viewModel.indexOf("fileDoc.name.matches(bookFileRegex)")
+        )
+        assertTrue(viewModel.contains("\"bookSource\" to fileDoc.uri.toString()"))
+    }
+
     private fun projectFile(pathInApp: String): String =
         sequenceOf(File(pathInApp), File("app/$pathInApp"))
             .firstOrNull(File::isFile)
             ?.readText()
             ?: error("Missing project file: $pathInApp")
 }
+

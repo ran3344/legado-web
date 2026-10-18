@@ -3,13 +3,13 @@ package io.legado.app.ui.association
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
-import android.content.DialogInterface
 import android.content.Intent
 import android.os.Bundle
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.widget.SearchView
 import androidx.appcompat.widget.Toolbar
 import androidx.fragment.app.viewModels
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -27,6 +27,9 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.replace.ReplaceRuleActivity
+import io.legado.app.ui.book.read.EffectiveReplacesDialog
+import io.legado.app.ui.book.read.ManualReplaceRulesDialog
+import io.legado.app.utils.toastOnUi
 import io.legado.app.ui.widget.dialog.CodeDialog
 import io.legado.app.ui.widget.dialog.WaitDialog
 import io.legado.app.utils.GSON
@@ -46,12 +49,19 @@ import splitties.views.onClick
  */
 class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_view),
     Toolbar.OnMenuItemClickListener,
-    CodeDialog.Callback {
+    CodeDialog.Callback, ManualReplaceRulesDialog.Callback, EffectiveReplacesDialog.Callback {
 
-    constructor(source: String, finishOnDismiss: Boolean = false) : this() {
+    constructor(
+        source: String,
+        finishOnDismiss: Boolean = false,
+        reimportBookUrl: String? = null,
+        reimportSourceUrl: String? = null,
+    ) : this() {
         arguments = Bundle().apply {
             putString("source", source)
             putBoolean("finishOnDismiss", finishOnDismiss)
+            putString("reimportBookUrl", reimportBookUrl)
+            putString("reimportSourceUrl", reimportSourceUrl)
         }
     }
 
@@ -69,7 +79,7 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
                     if (!startPendingReplacementRefresh() && pendingReplacementRefresh == null) {
                         syncOpenCodeDialog()
                     }
-                }
+                } ?: viewModel.refreshSourceReplacements()
             }
         }
 
@@ -78,19 +88,25 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
         setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
-    override fun onDismiss(dialog: DialogInterface) {
-        super.onDismiss(dialog)
-        if (arguments?.getBoolean("finishOnDismiss") == true) {
-            activity?.finish()
-        }
-    }
-
     @SuppressLint("NotifyDataSetChanged")
     override fun onFragmentCreated(view: View, savedInstanceState: Bundle?) {
         binding.toolBar.setBackgroundColor(primaryColor)
         binding.toolBar.setTitle(R.string.import_book_source)
         binding.rotateLoading.visible()
         initMenu()
+        binding.sourceImportSearch.apply {
+            visible()
+            setQuery(viewModel.searchQuery, false)
+            clearFocus()
+            setOnQueryTextListener(object : SearchView.OnQueryTextListener {
+                override fun onQueryTextSubmit(query: String?) = true
+                override fun onQueryTextChange(newText: String?): Boolean {
+                    viewModel.searchQuery = newText.orEmpty()
+                    if (sourceListReady) refreshSources()
+                    return true
+                }
+            })
+        }
         binding.recyclerView.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerView.adapter = adapter
         binding.tvCancel.visible()
@@ -101,24 +117,28 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
         binding.tvOk.isEnabled = false
         binding.tvOk.setOnClickListener {
             if (viewModel.sourceUpdatePending.value == true) return@setOnClickListener
-            val waitDialog = WaitDialog(requireContext())
-            waitDialog.show()
-            viewModel.importSelect {
-                waitDialog.dismiss()
-                dismissAllowingStateLoss()
+            if (arguments?.getString("reimportBookUrl") != null) {
+                viewModel.importSelect()
+            } else {
+                val waitDialog = WaitDialog(requireContext())
+                waitDialog.show()
+                viewModel.importSelect {
+                    waitDialog.dismiss()
+                    dismissAllowingStateLoss()
+                }
             }
         }
         binding.tvFooterLeft.visible()
         binding.tvFooterLeft.isEnabled = false
         binding.tvFooterLeft.setOnClickListener {
-            val selectAll = viewModel.isSelectAll
-            viewModel.selectStatus.forEachIndexed { index, b ->
-                if (b != !selectAll) {
-                    viewModel.setSelection(index, !selectAll)
-                }
-            }
+            val indices = adapter.getItems()
+            val selectAll = indices.all { !viewModel.canImportSource(it) || viewModel.selectStatus[it] }
+            indices.forEach { viewModel.setSelection(it, !selectAll) }
             adapter.notifyDataSetChanged()
             upSelectText()
+        }
+        viewModel.importFinished.observe(viewLifecycleOwner) { finished ->
+            if (finished) dismissAllowingStateLoss()
         }
         viewModel.errorLiveData.observe(viewLifecycleOwner) {
             binding.rotateLoading.gone()
@@ -134,9 +154,7 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
                 sourceListReady = true
                 binding.ivEmpty.gone()
                 binding.tvMsg.gone()
-                adapter.setItems(viewModel.allSources)
-                upSelectText()
-                updateInteractionState()
+                refreshSources()
                 if (viewModel.sourceUpdatePending.value != true &&
                     !startPendingReplacementRefresh() &&
                     pendingReplacementRefresh == null
@@ -152,6 +170,8 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
             }
         }
         viewModel.sourceUpdatePending.observe(viewLifecycleOwner) {
+            if (it == true) binding.rotateLoading.visible()
+            else if (sourceListReady) binding.rotateLoading.gone()
             adapter.notifyDataSetChanged()
             updateInteractionState()
             openCodeDialog()?.setReplaceRuleRefreshPending(
@@ -162,6 +182,7 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
                 pendingReplacementRefresh == null
             ) {
                 syncOpenCodeDialog()
+                showPendingReplacementDialog()
             }
         }
         val source = arguments?.getString("source")
@@ -169,10 +190,48 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
             dismiss()
             return
         }
-        viewModel.importSource(source)
+        viewModel.importSource(source,
+            reimportBookUrl = arguments?.getString("reimportBookUrl"),
+            reimportSourceUrl = arguments?.getString("reimportSourceUrl"))
+    }
+
+    private fun refreshSources() {
+        adapter.setItems(viewModel.allSources.indices.filter { index ->
+            val source = viewModel.allSources[index]
+            when (viewModel.searchQuery) {
+                getString(R.string.enabled) -> source.enabled
+                getString(R.string.disabled) -> !source.enabled
+                getString(R.string.need_login) -> !source.loginUrl.isNullOrBlank() ||
+                    (source.isJsSource() && source.hasLoginForm())
+                getString(R.string.no_group) -> source.bookSourceGroup.isNullOrBlank() ||
+                    source.bookSourceGroup?.trim() == "未分组"
+                getString(R.string.enabled_explore) -> source.enabledExplore
+                getString(R.string.disabled_explore) -> !source.enabledExplore
+                else -> matchesSourceImportSearch(viewModel.searchQuery, source.bookSourceName,
+                    source.bookSourceUrl, source.bookSourceGroup, source.bookSourceComment)
+            }
+        })
+        if (adapter.itemCount == 0) {
+            binding.tvMsg.setText(R.string.import_no_results)
+            binding.tvMsg.visible()
+        } else {
+            binding.tvMsg.gone()
+        }
+        upSelectText()
+        updateInteractionState()
     }
 
     private fun upSelectText() {
+        if (viewModel.searchQuery.isNotEmpty()) {
+            val indices = adapter.getItems()
+            val selected = indices.count { viewModel.selectStatus[it] }
+            val all = indices.all { !viewModel.canImportSource(it) || viewModel.selectStatus[it] }
+            binding.tvFooterLeft.text = getString(
+                if (all) R.string.import_unselect_results else R.string.import_select_results,
+                selected, indices.size, viewModel.selectCount,
+            )
+            return
+        }
         if (viewModel.isSelectAll) {
             binding.tvFooterLeft.text = getString(
                 R.string.select_cancel_count,
@@ -200,33 +259,42 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
                 ?.isChecked = AppConfig.importKeepEnable
             findItem(R.id.menu_show_comment)
                 ?.isChecked = AppConfig.importShowComment
+            findItem(R.id.menu_remember_source_group)
+                ?.isChecked = AppConfig.importRememberGroup
             findItem(R.id.menu_replace_source)
-                ?.isChecked = viewModel.useSourceReplacement
+                ?.isChecked = viewModel.automaticSourceReplacement
+        }
+        updateGroupMenu()
+    }
+
+    private fun updateGroupMenu() {
+        val item = binding.toolBar.menu.findItem(R.id.menu_new_group)
+        val name = viewModel.groupName
+        item.title = if (name.isNullOrBlank()) getString(R.string.diy_source_group) else {
+            val title = getString(R.string.diy_edit_source_group_title, name)
+            if (viewModel.isAddGroup) "+$title" else title
         }
     }
 
     @SuppressLint("InflateParams", "NotifyDataSetChanged")
     override fun onMenuItemClick(item: MenuItem): Boolean {
         when (item.itemId) {
-            R.id.menu_new_group -> alertCustomGroup(item)
+            R.id.menu_new_group -> alertCustomGroup()
+            R.id.menu_replace_rule -> onOpenReplaceRules()
+            R.id.menu_effective_replaces -> showSourceReplacements(false)
+            R.id.menu_manual_replace_rule -> showSourceReplacements(true)
             R.id.menu_select_new_source -> {
-                val selectAllNew = viewModel.isSelectAllNew
-                viewModel.newSourceStatus.forEachIndexed { index, b ->
-                    if (b) {
-                        viewModel.setSelection(index, !selectAllNew)
-                    }
-                }
+                val indices = adapter.getItems().filter { viewModel.newSourceStatus[it] }
+                val selectAll = indices.all { !viewModel.canImportSource(it) || viewModel.selectStatus[it] }
+                indices.forEach { viewModel.setSelection(it, !selectAll) }
                 adapter.notifyDataSetChanged()
                 upSelectText()
             }
 
             R.id.menu_select_update_source -> {
-                val selectAllUpdate = viewModel.isSelectAllUpdate
-                viewModel.updateSourceStatus.forEachIndexed { index, b ->
-                    if (b) {
-                        viewModel.setSelection(index, !selectAllUpdate)
-                    }
-                }
+                val indices = adapter.getItems().filter { viewModel.updateSourceStatus[it] }
+                val selectAll = indices.all { !viewModel.canImportSource(it) || viewModel.selectStatus[it] }
+                indices.forEach { viewModel.setSelection(it, !selectAll) }
                 adapter.notifyDataSetChanged()
                 upSelectText()
             }
@@ -252,6 +320,19 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
                 adapter.notifyDataSetChanged()
             }
 
+            R.id.menu_remember_source_group -> {
+                item.isChecked = !item.isChecked
+                AppConfig.importRememberGroup = item.isChecked
+                if (item.isChecked) {
+                    AppConfig.importLastGroup = viewModel.groupName
+                    AppConfig.importLastGroupAdd = viewModel.isAddGroup
+                } else {
+                    viewModel.groupName = null
+                    viewModel.isAddGroup = false
+                }
+                updateGroupMenu()
+            }
+
             R.id.menu_replace_source -> {
                 item.isChecked = !item.isChecked
                 viewModel.setUseSourceReplacement(item.isChecked)
@@ -260,13 +341,15 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
         return false
     }
 
-    private fun alertCustomGroup(item: MenuItem) {
+    private fun alertCustomGroup() {
         alert(R.string.diy_edit_source_group) {
             val alertBinding = DialogCustomGroupBinding.inflate(layoutInflater).apply {
                 val groups = appDb.bookSourceDao.allGroups()
                 textInputLayout.setHint(R.string.group_name)
                 editView.setFilterValues(groups.toList())
                 editView.dropDownHeight = 180.dpToPx()
+                editView.setText(viewModel.groupName)
+                swAddGroup.isChecked = viewModel.isAddGroup
             }
             customView {
                 alertBinding.root
@@ -274,16 +357,11 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
             okButton {
                 viewModel.isAddGroup = alertBinding.swAddGroup.isChecked
                 viewModel.groupName = alertBinding.editView.text?.toString()
-                if (viewModel.groupName.isNullOrBlank()) {
-                    item.title = getString(R.string.diy_source_group)
-                } else {
-                    val group = getString(R.string.diy_edit_source_group_title, viewModel.groupName)
-                    if (viewModel.isAddGroup) {
-                        item.title = "+$group"
-                    } else {
-                        item.title = group
-                    }
+                if (AppConfig.importRememberGroup) {
+                    AppConfig.importLastGroup = viewModel.groupName
+                    AppConfig.importLastGroupAdd = viewModel.isAddGroup
                 }
+                updateGroupMenu()
             }
             cancelButton()
         }
@@ -293,14 +371,19 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
         val sourceUpdatePending = viewModel.sourceUpdatePending.value == true
         val importEnabled = sourceListReady && !sourceUpdatePending
         binding.tvOk.isEnabled = importEnabled
-        binding.tvFooterLeft.isEnabled = importEnabled
+        binding.tvFooterLeft.isEnabled = importEnabled && adapter.itemCount > 0
         binding.tvCancel.isEnabled = !sourceUpdatePending
         isCancelable = !sourceUpdatePending
+        binding.toolBar.menu.findItem(R.id.menu_effective_replaces).isEnabled = importEnabled
+        binding.toolBar.menu.findItem(R.id.menu_replace_rule).isEnabled = importEnabled
+        binding.toolBar.menu.findItem(R.id.menu_manual_replace_rule).apply {
+            isEnabled = importEnabled && !viewModel.automaticSourceReplacement
+        }
         binding.toolBar.menu.apply {
             findItem(R.id.menu_select_new_source)?.isEnabled = importEnabled
             findItem(R.id.menu_select_update_source)?.isEnabled = importEnabled
             findItem(R.id.menu_replace_source)?.apply {
-                isChecked = viewModel.useSourceReplacement
+                isChecked = viewModel.automaticSourceReplacement
                 isEnabled = importEnabled
             }
         }
@@ -312,6 +395,57 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
         if (index !in viewModel.allSources.indices) return
         val source = GSON.fromJsonObject<BookSource>(code).getOrNull() ?: return
         viewModel.updateSource(index, source)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        showPendingReplacementDialog()
+    }
+
+    private fun showPendingReplacementDialog() {
+        if (!isResumed || childFragmentManager.isStateSaved || viewModel.sourceUpdatePending.value == true) return
+        val (manual, index) = viewModel.pendingReplacementDialog ?: return
+        viewModel.pendingReplacementDialog = null
+        showSourceReplacements(manual, index)
+    }
+
+    private fun showSourceReplacements(manual: Boolean, index: Int = -1) {
+        if (!isAdded || childFragmentManager.isStateSaved || viewModel.sourceUpdatePending.value == true) return
+        if (manual) {
+            if (viewModel.automaticSourceReplacement) return
+            showDialogFragment(ManualReplaceRulesDialog(viewModel.selectedManualRuleIds(index), index.toString()))
+        } else {
+            showDialogFragment(EffectiveReplacesDialog(viewModel.effectiveRuleIds(index)))
+        }
+    }
+
+    override fun onShowSourceReplacements(code: String, requestId: String?, manual: Boolean) {
+        val index = requestId?.toIntOrNull() ?: return
+        val source = parseDraftSource(code) ?: run {
+            toastOnUi(R.string.wrong_format)
+            return
+        }
+        viewModel.refreshSourceReplacements(index, source, openDialog = manual)
+    }
+
+    override fun onManualSourceRulesSelected(ids: List<Long>, requestId: String?) {
+        val index = requestId?.toIntOrNull() ?: -1
+        val dialog = openCodeDialog()?.takeIf { it.requestId?.toIntOrNull() == index }
+        val source = dialog?.let { parseDraftSource(it.currentOriginalCode()) }
+        if (dialog != null && source == null) {
+            toastOnUi(R.string.wrong_format)
+            return
+        }
+        viewModel.refreshSourceReplacements(index, source, ids)
+    }
+
+    override fun onEffectiveSourceRulesChanged() {
+        val dialog = openCodeDialog()
+        if (dialog == null) viewModel.refreshSourceReplacements()
+        else {
+            pendingReplacementRefresh = dialog.currentOriginalCode() to dialog.requestId
+            startPendingReplacementRefresh()
+        }
     }
 
     override fun onOpenReplaceRules() {
@@ -354,13 +488,15 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
     override fun isReplaceRuleRefreshPending(): Boolean =
         pendingReplacementRefresh != null || viewModel.sourceUpdatePending.value == true
 
+    override fun isManualSourceReplacementEnabled(): Boolean = !viewModel.automaticSourceReplacement
+
     override fun getCodeAlternate(requestId: String?): String? {
         val index = requestId?.toIntOrNull() ?: return null
         return viewModel.replacedSourceJson(index)
     }
 
     inner class SourcesAdapter(context: Context) :
-        RecyclerAdapter<BookSource, ItemSourceImportBinding>(context) {
+        RecyclerAdapter<Int, ItemSourceImportBinding>(context) {
 
         override fun getViewBinding(parent: ViewGroup): ItemSourceImportBinding {
             return ItemSourceImportBinding.inflate(inflater, parent, false)
@@ -369,21 +505,22 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
         override fun convert(
             holder: ItemViewHolder,
             binding: ItemSourceImportBinding,
-            item: BookSource,
+            item: Int,
             payloads: MutableList<Any>
         ) {
             binding.apply {
-                val position = holder.layoutPosition
+                val position = item
+                val source = viewModel.allSources.getOrNull(position) ?: return
                 val canImport = viewModel.canImportSource(position)
                 val interactionEnabled = viewModel.sourceUpdatePending.value != true
                 val replacementError = viewModel.sourceReplacementError(position)
                     ?.takeIf { viewModel.useSourceReplacement }
                 cbSourceName.isChecked = viewModel.selectStatus[position]
                 cbSourceName.isEnabled = canImport && interactionEnabled
-                cbSourceName.text = item.bookSourceName
+                cbSourceName.text = source.bookSourceName
                 val comment = replacementError?.let {
                     getString(R.string.source_replacement_error, it)
-                } ?: item.bookSourceComment?.takeIf {
+                } ?: source.bookSourceComment?.takeIf {
                     AppConfig.importShowComment && it.isNotBlank()
                 }
                 if (comment != null) {
@@ -422,24 +559,26 @@ class ImportBookSourceDialog() : BaseDialogFragment(R.layout.dialog_recycler_vie
                     if (viewModel.sourceUpdatePending.value == true) {
                         return@setOnUserCheckedChangeListener
                     }
-                    viewModel.setSelection(holder.layoutPosition, isChecked)
+                    val position = getItem(holder.bindingAdapterPosition) ?: return@setOnUserCheckedChangeListener
+                    viewModel.setSelection(position, isChecked)
                     upSelectText()
                 }
                 root.onClick {
+                    val position = getItem(holder.bindingAdapterPosition) ?: return@onClick
                     if (viewModel.sourceUpdatePending.value == true ||
-                        !viewModel.canImportSource(holder.layoutPosition)
+                        !viewModel.canImportSource(position)
                     ) {
                         return@onClick
                     }
                     cbSourceName.isChecked = !cbSourceName.isChecked
-                    viewModel.setSelection(holder.layoutPosition, cbSourceName.isChecked)
+                    viewModel.setSelection(position, cbSourceName.isChecked)
                     upSelectText()
                 }
                 tvOpen.setOnClickListener {
                     if (viewModel.sourceUpdatePending.value == true) {
                         return@setOnClickListener
                     }
-                    val position = holder.layoutPosition
+                    val position = getItem(holder.bindingAdapterPosition) ?: return@setOnClickListener
                     val source = viewModel.allSources[position]
                     showDialogFragment(
                         CodeDialog(

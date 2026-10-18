@@ -20,6 +20,7 @@ data class TextColumn(
     override val charData: String,
     /**标点挤压后字形在列内的绘制偏移,裁掉的是字框内的空白*/
     val drawOffset: Float = 0f,
+    override val isParagraphIndent: Boolean = false,
 ) : TextBaseColumn {
 
     override var textLine: TextLine = emptyTextLine
@@ -31,6 +32,12 @@ data class TextColumn(
             }
             field = value
         }
+    override var isReadAloud: Boolean = false
+        set(value) {
+            if (field != value) textLine.invalidate()
+            field = value
+        }
+
     override var isSearchResult: Boolean = false
         set(value) {
             if (field != value) {
@@ -65,13 +72,13 @@ data class TextColumn(
         val textPaint = textLine.textPaint
         val style = highlightStyle
         val styleTextColor = style?.textColor ?: 0
-        val baseTextColor = if (textLine.isReadAloud || isSearchResult) {
+        val baseTextColor = if (isReadAloud || isSearchResult) {
             ReadBookConfig.textAccentColor
         } else {
             textLine.textColor
         }
         val textColor = when {
-            textLine.isReadAloud || isSearchResult -> ReadBookConfig.textAccentColor
+            isReadAloud || isSearchResult -> ReadBookConfig.textAccentColor
             styleTextColor != 0 -> styleTextColor
             else -> textLine.textColor
         }
@@ -80,7 +87,7 @@ data class TextColumn(
         }
         val styledPaint = style?.takeIf {
             it.textColor != 0 || it.bold || it.italic || it.shadow != null ||
-                it.resolvedFontPath.isNotEmpty()
+                it.resolvedFontPath.isNotEmpty() || it.changesTextMetrics
         }?.let { HighlightDraw.obtainTextPaint(textPaint, it, textColor, charData) }
         val drawPaint = styledPaint ?: textPaint
         val y = textLine.lineBase - textLine.lineTop

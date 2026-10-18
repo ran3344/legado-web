@@ -7,33 +7,37 @@ import java.io.File
 class ReadRecordDeviceScopeTest {
 
     @Test
-    fun `active readers reload own row while display still aggregates`() {
+    fun `active readers reload their own device and author account`() {
         val dao = projectFile("src/main/java/io/legado/app/data/dao/ReadRecordDao.kt")
-        val normalizedDao = dao.replace(Regex("\\s+"), " ")
         assertTrue(
             dao.contains(
                 "select readTime from readRecord where deviceId = :deviceId and bookName = :bookName"
             )
         )
-        assertTrue(dao.contains("fun getReadTime(deviceId: String, bookName: String)"))
-        assertTrue(
-            normalizedDao.contains(
-                "select bookName, sum(readTime) as readTime, max(lastRead) as lastRead, " +
-                    "group_concat(author, char(31)) as author " +
-                    "from readRecord group by bookName"
-            )
-        )
-
+        assertTrue(dao.contains("fun getReadTime(deviceId: String, bookName: String, author: String)"))
         listOf(
             "src/main/java/io/legado/app/model/ReadBook.kt" to
-                "getReadTime(readRecord.deviceId, book.name)",
+                "getRecord(AppConst.androidId, book.name, book.author)",
             "src/main/java/io/legado/app/model/ReadManga.kt" to
-                "getReadTime(readRecord.deviceId, book.name)",
+                "getRecord(AppConst.androidId, book.name, book.author)",
             "src/main/java/io/legado/app/model/AudioPlay.kt" to
-                "getReadTime(record.deviceId, record.bookName)",
+                "ReadRecord(\n            deviceId = AppConst.androidId,",
         ).forEach { (path, call) ->
             assertTrue(path, projectFile(path).contains(call))
         }
+    }
+
+    @Test
+    fun `restore maps blank legacy device ids to the current device`() {
+        val restore = projectFile("src/main/java/io/legado/app/help/storage/Restore.kt")
+        assertTrue(restore.contains("readRecord.deviceId.isBlank()"))
+        assertTrue(restore.contains("readRecord.copy(deviceId = androidId)"))
+        assertTrue(restore.contains("restoredRecord.deviceId == androidId"))
+        assertTrue(
+            restore.contains(
+                "getRecord(restoredRecord.deviceId, restoredRecord.bookName, restoredRecord.author)"
+            )
+        )
     }
 
     @Test
@@ -49,12 +53,12 @@ class ReadRecordDeviceScopeTest {
 
         val manga = projectFile("src/main/java/io/legado/app/model/ReadManga.kt")
         val upReadTime = methodBody(manga, "upReadTime")
-        assertTrue(upReadTime.contains("val author = book?.author ?: return"))
-        assertTrue(upReadTime.contains("val elapsed = now - readStartTime"))
+        assertTrue(upReadTime.contains("val currentBook = book?.copy() ?: return"))
+        assertTrue(upReadTime.contains("val elapsed = (now - readStartTime).coerceAtLeast(0)"))
         assertTrue(upReadTime.contains("readStartTime = now"))
         assertTrue(upReadTime.contains("readRecord.copy()"))
-        assertTrue(upReadTime.contains("appDb.readRecordDao.insert(record)"))
-        assertTrue(upReadTime.indexOf("val elapsed = now - readStartTime") <
+        assertTrue(upReadTime.contains("record.saveWithCover(snapshotBook, elapsed)"))
+        assertTrue(upReadTime.indexOf("val elapsed = (now - readStartTime).coerceAtLeast(0)") <
             upReadTime.indexOf("executor.execute"))
         assertTrue(upReadTime.indexOf("readStartTime = now") <
             upReadTime.indexOf("executor.execute"))

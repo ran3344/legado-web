@@ -254,6 +254,7 @@ object ChapterProvider {
         bookContent: BookContent,
         chapterSize: Int,
         saveChapterData: Boolean = true,
+        hasBodyContent: Boolean = bookContent.textList.isNotEmpty(),
     ): TextChapter {
 
         val textChapter = TextChapter(
@@ -264,7 +265,7 @@ object ChapterProvider {
             bookChapter.isVip,
             bookChapter.isPay,
             bookContent.effectiveReplaceRules,
-            hasBodyContent = bookContent.textList.isNotEmpty(),
+            hasBodyContent = hasBodyContent,
             isTransient = !saveChapterData,
         ).apply {
             createLayout(scope, book, bookContent, saveChapterData)
@@ -500,10 +501,11 @@ object ChapterProvider {
         reviewColumn: ReviewColumn,
         textLine: TextLine,
     ): Boolean {
-        val width = getReviewWidth(textLine.isReviewTitle)
+        val width = if (textLine.highlightReviewGap != null) textLine.highlightReviewWidth
+            else getReviewWidth(textLine.isReviewTitle)
         val textEnd = textLine.columns.lastOrNull { it !is ReviewColumn }?.end
             ?: textLine.lineEnd
-        val start = ReviewColumnGeometry.start(
+        val start = textLine.highlightReviewGap?.let { textEnd + it } ?: ReviewColumnGeometry.start(
             textEnd = textEnd,
             width = width,
             viewWidth = viewWidth,
@@ -661,7 +663,7 @@ object ChapterProvider {
         val titleNormal = Typeface.create(titleTypeface, Typeface.NORMAL)
         val textBold = Typeface.create(textTypeface, Typeface.BOLD)
         val textNormal = Typeface.create(textTypeface, Typeface.NORMAL)
-        val (titleFont, textFont) = when (ReadBookConfig.textBold) {
+        val (legacyTitleFont, textFont) = when (ReadBookConfig.textBold) {
             1 -> {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
                     Pair(Typeface.create(titleTypeface, 900, false), textBold)
@@ -677,6 +679,16 @@ object ChapterProvider {
             }
 
             else -> Pair(titleBold, textNormal)
+        }
+        val titleFont = when (ReadBookConfig.titleBold) {
+            0 -> titleNormal
+            1 -> titleBold
+            2 -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                Typeface.create(titleTypeface, 300, false)
+            } else {
+                titleNormal
+            }
+            else -> legacyTitleFont
         }
 
         //标题

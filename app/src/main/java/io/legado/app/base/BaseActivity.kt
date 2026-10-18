@@ -3,6 +3,8 @@ package io.legado.app.base
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.util.AttributeSet
@@ -12,9 +14,12 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.Window
 import android.widget.FrameLayout
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
+import androidx.lifecycle.lifecycleScope
 import androidx.viewbinding.ViewBinding
 import io.legado.app.R
 import io.legado.app.constant.AppConst
@@ -39,6 +44,9 @@ import io.legado.app.utils.setNavigationBarColorAuto
 import io.legado.app.utils.setStatusBarColorAuto
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.windowSize
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 abstract class BaseActivity<VB : ViewBinding>(
     val fullScreen: Boolean = true,
@@ -84,7 +92,9 @@ abstract class BaseActivity<VB : ViewBinding>(
         window.decorView.disableAutoFill()
         initTheme()
         super.onCreate(savedInstanceState)
+        if (!shouldCreateContentView()) return
         setupSystemBar()
+        setupPredictiveBack()
         setContentView(binding.root)
         upBackgroundImage()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -93,6 +103,21 @@ abstract class BaseActivity<VB : ViewBinding>(
         }
         observeLiveBus()
         onActivityCreated(savedInstanceState)
+    }
+
+    /**
+     * 注册返回回调接管返回操作,系统不再播放预测性返回动画
+     */
+    private fun setupPredictiveBack() {
+        if (!AppConfig.disablePredictiveBack
+            || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+        ) {
+            return
+        }
+        onBackInvokedDispatcher.registerOnBackInvokedCallback(
+            OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            OnBackInvokedCallback { onBackPressedDispatcher.onBackPressed() }
+        )
     }
 
     @RequiresApi(Build.VERSION_CODES.O)
@@ -111,6 +136,10 @@ abstract class BaseActivity<VB : ViewBinding>(
     }
 
     abstract fun onActivityCreated(savedInstanceState: Bundle?)
+
+    protected open fun shouldCreateContentView(): Boolean = true
+
+    protected open fun shouldShowWindowBackground(): Boolean = true
 
     final override fun onCreateOptionsMenu(menu: Menu): Boolean {
         val bool = onCompatCreateOptionsMenu(menu)
@@ -168,12 +197,12 @@ abstract class BaseActivity<VB : ViewBinding>(
             Theme.Transparent -> setTheme(R.style.AppTheme_Transparent)
             Theme.Dark -> {
                 setTheme(R.style.AppTheme_Dark)
-               window.decorView.applyBackgroundTint(backgroundColor)
+                applyWindowBackground()
             }
 
             Theme.Light -> {
                 setTheme(R.style.AppTheme_Light)
-               window.decorView.applyBackgroundTint(backgroundColor)
+                applyWindowBackground()
             }
 
             else -> {
@@ -182,21 +211,36 @@ abstract class BaseActivity<VB : ViewBinding>(
                 } else {
                     setTheme(R.style.AppTheme_Dark)
                 }
-               window.decorView.applyBackgroundTint(backgroundColor)
+                applyWindowBackground()
             }
         }
     }
 
+    private fun applyWindowBackground() {
+        if (shouldShowWindowBackground()) {
+            window.decorView.applyBackgroundTint(backgroundColor)
+        } else {
+            window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        }
+    }
+
     open fun upBackgroundImage() {
-        if (imageBg) {
-            try {
-                ThemeConfig.getBgImage(this, windowManager.windowSize)?.let { drawable ->
-                   window.decorView.background = drawable
-                }
+        if (!imageBg) return
+        val metrics = windowManager.windowSize
+        lifecycleScope.launch(Dispatchers.IO) {
+            val drawable = try {
+                ThemeConfig.getBgImage(this@BaseActivity, metrics)
             } catch (_: OutOfMemoryError) {
                 toastOnUi("背景图片太大,内存溢出")
+                null
             } catch (e: Exception) {
                 AppLog.put("加载背景出错\n${e.localizedMessage}", e)
+                null
+            } ?: return@launch
+            withContext(Dispatchers.Main) {
+                if (!isFinishing && !isDestroyed) {
+                    window.decorView.background = drawable
+                }
             }
         }
     }

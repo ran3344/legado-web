@@ -211,6 +211,12 @@ data class Book(
         return config.reverseToc
     }
 
+    fun setReverseTocDisplay(reversed: Boolean) {
+        config.reverseTocDisplay = reversed
+    }
+
+    fun getReverseTocDisplay(): Boolean = config.reverseTocDisplay
+
     fun setTocExpanded(expanded: Boolean) {
         config.tocExpanded = expanded
     }
@@ -476,6 +482,7 @@ data class Book(
         if (ReadBook.book?.bookUrl == bookUrl) {
             ReadBook.book = null
         }
+        saveReadRecordSnapshot()
         appDb.bookDao.delete(this)
     }
 
@@ -492,6 +499,7 @@ data class Book(
     @Parcelize
     data class ReadConfig(
         var reverseToc: Boolean = false,
+        var reverseTocDisplay: Boolean = false,
         var tocExpanded: Boolean = true,
         var pageAnim: Int? = null,
         var reSegment: Boolean = false,

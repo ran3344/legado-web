@@ -13,6 +13,7 @@ import io.legado.app.constant.PageAnim
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.PunctuationCompressMode
 import io.legado.app.help.DefaultData
+import io.legado.app.help.book.ResourceThemeGeneration
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.utils.BitmapUtils
 import io.legado.app.utils.FileUtils
@@ -207,11 +208,13 @@ object ReadBookConfig {
     var durConfig
         get() = getConfig(styleSelect)
         set(value) {
+            val changed = getConfig(styleSelect) != value
             configList[styleSelect] = value
             underlineConfigInitialized = false
             if (shareLayout) {
                 shareConfig = value
             }
+            if (changed) ResourceThemeGeneration.changed()
         }
 
     var isComic: Boolean = false
@@ -235,6 +238,7 @@ object ReadBookConfig {
     }
 
     fun initConfigs() {
+        val previous = configList.toList()
         // A restored/imported config can contain the legacy per-style underline value.
         underlineConfigInitialized = false
         normalizedUnderlineConfigRefs = emptyList()
@@ -253,9 +257,11 @@ object ReadBookConfig {
             configList.clear()
             configList.addAll(it)
         }
+        if (previous.isNotEmpty() && previous != configList) ResourceThemeGeneration.changed()
     }
 
     fun initShareConfig() {
+        val previous = if (::shareConfig.isInitialized) shareConfig else null
         underlineConfigInitialized = false
         normalizedUnderlineConfigRefs = emptyList()
         normalizedShareConfig = null
@@ -270,6 +276,7 @@ object ReadBookConfig {
             }
         }
         shareConfig = c ?: configList.getOrNull(5) ?: Config()
+        if (previous != null && previous != shareConfig) ResourceThemeGeneration.changed()
         normalizeUnderlineConfig()
     }
 
@@ -359,9 +366,11 @@ object ReadBookConfig {
     }
 
     private fun resetAll() {
+        val previous = configList.toList()
         DefaultData.readConfigs.let {
             configList.clear()
             configList.addAll(it)
+            if (previous.isNotEmpty() && previous != configList) ResourceThemeGeneration.changed()
             save()
         }
     }
@@ -384,14 +393,18 @@ object ReadBookConfig {
         }
     var readStyleSelect = appCtx.getPrefInt(PreferKey.readStyleSelect)
         set(value) {
+            val changed = field != value
             field = value
+            if (changed) ResourceThemeGeneration.changed()
             if (appCtx.getPrefInt(PreferKey.readStyleSelect) != value) {
                 appCtx.putPrefInt(PreferKey.readStyleSelect, value)
             }
         }
     var comicStyleSelect = appCtx.getPrefInt(PreferKey.comicStyleSelect, readStyleSelect)
         set(value) {
+            val changed = field != value
             field = value
+            if (changed) ResourceThemeGeneration.changed()
             if (appCtx.getPrefInt(PreferKey.comicStyleSelect) != value) {
                 appCtx.putPrefInt(PreferKey.comicStyleSelect, value)
             }
@@ -460,6 +473,12 @@ object ReadBookConfig {
     val resolvedTitleFont: String
         get() = config.titleFont.ifEmpty { config.textFont }
 
+    var titleBold: Int
+        get() = config.titleBold.takeIf { it in -1..2 } ?: -1
+        set(value) {
+            config.titleBold = value.takeIf { it in -1..2 } ?: -1
+        }
+
     var textBold: Int
         get() = config.textBold
         set(value) {
@@ -520,7 +539,9 @@ object ReadBookConfig {
     var titleColor: Int
         get() = config.titleColor
         set(value) {
+            val changed = config.titleColor != value
             config.titleColor = value
+            if (changed) ResourceThemeGeneration.changed()
         }
 
     val titleTextColor: Int
@@ -541,7 +562,9 @@ object ReadBookConfig {
     var titleNumberColor: Int
         get() = config.titleNumberColor
         set(value) {
+            val changed = config.titleNumberColor != value
             config.titleNumberColor = value
+            if (changed) ResourceThemeGeneration.changed()
         }
 
     val titleNumberTextColor: Int
@@ -725,6 +748,7 @@ object ReadBookConfig {
         if (shareLayout) {
             exportConfig.textFont = shareConfig.textFont
             exportConfig.titleFont = shareConfig.titleFont
+            exportConfig.titleBold = shareConfig.titleBold
             exportConfig.textBold = shareConfig.textBold
             exportConfig.textSize = shareConfig.textSize
             exportConfig.letterSpacing = shareConfig.letterSpacing
@@ -887,6 +911,7 @@ object ReadBookConfig {
         private var pageAnimEInk: Int = 4,
         var textFont: String = "",//字体
         var titleFont: String = "",//标题字体, 空值跟随正文字体
+        var titleBold: Int = -1,//标题字重 -1:保持原有随正文变化的效果, 0:正常, 1:粗体, 2:细体
         var textBold: Int = 0,//是否粗体字 0:正常, 1:粗体, 2:细体
         var textSize: Int = 20,//文字大小
         var letterSpacing: Float = 0.1f,//字间距
@@ -987,6 +1012,7 @@ object ReadBookConfig {
         }
 
         fun setCurTextColor(color: Int) {
+            val changed = curTextColor() != color
             when {
                 AppConfig.isEInkMode -> {
                     textColorEInk = "#${color.hexString}"
@@ -1003,6 +1029,7 @@ object ReadBookConfig {
                     textColorInt = color
                 }
             }
+            if (changed && configList.any { it === this }) ResourceThemeGeneration.changed()
         }
 
         fun curTextColor(): Int {
@@ -1017,6 +1044,7 @@ object ReadBookConfig {
         }
 
         fun setCurTextAccentColor(color: Int) {
+            val changed = curTextAccentColor() != color
             when {
                 AppConfig.isEInkMode -> {
                     textAccentColorEInk = "#${color.hexString}"
@@ -1033,6 +1061,7 @@ object ReadBookConfig {
                     textAccentColorInt = color
                 }
             }
+            if (changed && configList.any { it === this }) ResourceThemeGeneration.changed()
         }
 
         fun curTextAccentColor(): Int {
@@ -1077,6 +1106,7 @@ object ReadBookConfig {
         }
 
         fun setCurBg(bgType: Int, bg: String) {
+            val changed = curBgType() != bgType || curBgStr() != bg
             when {
                 AppConfig.isEInkMode -> {
                     bgTypeEInk = bgType
@@ -1093,6 +1123,7 @@ object ReadBookConfig {
                     bgStr = bg
                 }
             }
+            if (changed && configList.any { it === this }) ResourceThemeGeneration.changed()
         }
 
         fun curBgStr(): String {
@@ -1219,6 +1250,7 @@ object ReadBookConfig {
             "pageAnimEInk" to pageAnimEInk,
             "textFont" to textFont,
             "titleFont" to titleFont,
+            "titleBold" to titleBold,
             "textBold" to textBold,
             "textSize" to textSize,
             "letterSpacing" to letterSpacing,

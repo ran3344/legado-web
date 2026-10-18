@@ -18,10 +18,13 @@ import io.legado.app.help.HighlightStyle.Kind
 import io.legado.app.help.HighlightStyle.Shadow
 import io.legado.app.help.HighlightStyle.Underline
 import io.legado.app.help.HighlightStyles
+import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.ui.font.FontSelectDialog
 import io.legado.app.ui.book.read.page.provider.ChapterProvider
+import io.legado.app.ui.widget.number.NumberPickerDialog
 import io.legado.app.utils.dpToPx
 import io.legado.app.utils.showDialogFragment
+import kotlin.math.roundToInt
 
 class HighlightStyleDialog : BottomSheetDialogFragment(),
     ShadowEditDialog.Callback,
@@ -60,6 +63,38 @@ class HighlightStyleDialog : BottomSheetDialogFragment(),
         binding.llHighlightFont.setOnClickListener {
             showDialogFragment<FontSelectDialog>()
         }
+        binding.tvHighlightFontSize.setOnClickListener {
+            NumberPickerDialog(requireContext()).setTitle(getString(R.string.text_size))
+                .setMinValue(5).setMaxValue(100)
+                .setValue(currentStyle().resolvedFontSize?.roundToInt() ?: ReadBookConfig.textSize)
+                .setCustomButton(R.string.btn_default_s) { apply(currentStyle().copy(fontSize = null)) }
+                .show { apply(currentStyle().copy(fontSize = it.toFloat())) }
+        }
+        binding.tvHighlightLetterSpacing.setOnClickListener {
+            NumberPickerDialog(requireContext()).setTitle(getString(R.string.text_letter_spacing))
+                .setMinValue(0).setMaxValue(150)
+                .setDisplayedValues(Array(151) { "${it - 50}%" })
+                .setValue(((currentStyle().resolvedLetterSpacing ?: ReadBookConfig.letterSpacing) * 100).roundToInt() + 50)
+                .setCustomButton(R.string.btn_default_s) { apply(currentStyle().copy(letterSpacing = null)) }
+                .show { apply(currentStyle().copy(letterSpacing = (it - 50) / 100f)) }
+        }
+        binding.tvHighlightHorizontalPadding.setOnClickListener {
+            NumberPickerDialog(requireContext()).setTitle(getString(R.string.highlight_horizontal_padding))
+                .setMinValue(0).setMaxValue(64)
+                .setValue(currentStyle().resolvedHorizontalPadding?.roundToInt() ?: 0)
+                .setCustomButton(R.string.btn_default_s) {
+                    apply(currentStyle().copy(horizontalPadding = null, reserveTextSpace = false))
+                }
+                .show { apply(currentStyle().copy(horizontalPadding = it.toFloat())) }
+        }
+        binding.cbHighlightReserveTextSpace.setOnClickListener {
+            apply(currentStyle().copy(reserveTextSpace = binding.cbHighlightReserveTextSpace.isChecked))
+        }
+        refresh()
+    }
+
+    override fun onViewStateRestored(savedInstanceState: Bundle?) {
+        super.onViewStateRestored(savedInstanceState)
         refresh()
     }
 
@@ -265,6 +300,16 @@ class HighlightStyleDialog : BottomSheetDialogFragment(),
                     currentStyle().underline?.let {
                         UnderlineEditDialog.show(childFragmentManager, it)
                     }
+                } else if (channel.labelRes == R.string.highlight_bg_color) {
+                    NumberPickerDialog(requireContext())
+                        .setTitle(getString(R.string.highlight_pill_padding))
+                        .setMinValue(25)
+                        .setMaxValue(200)
+                        .setValue((currentStyle().resolvedPillPaddingScale * 100).roundToInt())
+                        .setCustomButton(R.string.btn_default_s) {
+                            apply(currentStyle().copy(pillPaddingScale = null))
+                        }
+                        .show { apply(currentStyle().copy(pillPaddingScale = it / 100f)) }
                 }
             }
             binding.llChannels.addView(row.root)
@@ -273,7 +318,7 @@ class HighlightStyleDialog : BottomSheetDialogFragment(),
     }
 
     fun refresh() {
-        if (_binding == null) return
+        if (_binding == null || rows.size != channels.size) return
         val style = currentStyle()
         channels.forEachIndexed { index, channel ->
             val row = rows[index]
@@ -291,11 +336,26 @@ class HighlightStyleDialog : BottomSheetDialogFragment(),
             val extra = channel.extra?.invoke(style)
             row.tvExtra.visibility = if (extra != null && enabled) View.VISIBLE else View.GONE
             row.tvExtra.text = extra.orEmpty()
-            val tuneVisible = channel.labelRes == R.string.highlight_underline && enabled
+            val pill = channel.labelRes == R.string.highlight_bg_color &&
+                style.resolvedFillShape == FillShape.PILL
+            val tuneVisible = enabled && (channel.labelRes == R.string.highlight_underline || pill)
             row.tvTune.visibility = if (tuneVisible) View.VISIBLE else View.GONE
-            if (tuneVisible) row.tvTune.text = getString(R.string.highlight_underline_adjust)
+            if (tuneVisible) row.tvTune.text = if (pill) {
+                getString(R.string.highlight_pill_padding_value,
+                    (style.resolvedPillPaddingScale * 100).roundToInt())
+            } else {
+                getString(R.string.highlight_underline_adjust)
+            }
         }
         val fontPath = style.resolvedFontPath
+        binding.tvHighlightHorizontalPadding.text = getString(R.string.highlight_horizontal_padding) + " · " +
+            (style.resolvedHorizontalPadding?.let { "${it.roundToInt()} dp" } ?: getString(R.string.btn_default_s))
+        binding.cbHighlightReserveTextSpace.isChecked = style.reserveTextSpace
+        binding.cbHighlightReserveTextSpace.isEnabled = style.resolvedHorizontalPadding != null
+        binding.tvHighlightFontSize.text = getString(R.string.text_size) + " · " +
+            (style.resolvedFontSize?.roundToInt()?.toString() ?: getString(R.string.btn_default_s))
+        binding.tvHighlightLetterSpacing.text = getString(R.string.text_letter_spacing) + " · " +
+            (style.resolvedLetterSpacing?.let { "${(it * 100).roundToInt()}%" } ?: getString(R.string.btn_default_s))
         binding.tvHighlightFontValue.text = if (fontPath.isEmpty()) {
             getString(R.string.default_font)
         } else {

@@ -18,6 +18,7 @@ import io.legado.app.help.http.decompressed
 import io.legado.app.help.http.newCallResponseBody
 import io.legado.app.help.http.okHttpClient
 import io.legado.app.help.source.SourceHelp
+import io.legado.app.model.ReadBook
 import io.legado.app.model.RuleUpdate
 import io.legado.app.model.jsSource.JsSourceConfig
 import io.legado.app.utils.inputStream
@@ -27,6 +28,9 @@ import io.legado.app.utils.isJsonObject
 import io.legado.app.utils.isUri
 import io.legado.app.utils.runCatchingCancellable
 import io.legado.app.utils.splitNotBlank
+import kotlinx.coroutines.Dispatchers.Main
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
 
@@ -51,16 +55,21 @@ internal fun resolveImportBookSourceStatus(
 internal fun resolveImportSourceSelection(
     status: ImportBookSourceStatus,
     manualSelection: Boolean?,
+    selectExisting: Boolean = false,
 ): Boolean {
-    return manualSelection ?: status.shouldSelect
+    return manualSelection ?: (selectExisting || status.shouldSelect)
 }
 
 class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
-    var isAddGroup = false
-    var groupName: String? = null
+    var isAddGroup = AppConfig.importRememberGroup && AppConfig.importLastGroupAdd
+    var groupName: String? = AppConfig.importLastGroup.takeIf { AppConfig.importRememberGroup }
+    var searchQuery = ""
     val errorLiveData = MutableLiveData<String>()
     val successLiveData = MutableLiveData<Int>()
     val sourceUpdatePending = MutableLiveData(false)
+    val importFinished = MutableLiveData(false)
+    private var reimportBookUrl: String? = null
+    private var reimportSourceUrl: String? = null
 
     val allSources = arrayListOf<BookSource>()
     private val sourceCandidates = arrayListOf<BookSourceImportCandidate>()
@@ -70,8 +79,11 @@ class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
     val updateSourceStatus = arrayListOf<Boolean>()
     private val manualSelections = arrayListOf<Boolean?>()
     private var importStarted = false
-    var useSourceReplacement = AppConfig.importReplaceSource
+    var automaticSourceReplacement = AppConfig.importReplaceSource
         private set
+    private val manualRuleIds = hashMapOf<Int, List<Long>>()
+    val useSourceReplacement: Boolean
+        get() = automaticSourceReplacement || manualRuleIds.isNotEmpty()
 
     val isSelectAll: Boolean
         get() {
@@ -114,7 +126,9 @@ class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
             return count
         }
 
-    fun importSelect(finally: () -> Unit) {
+    fun importSelect(finally: () -> Unit = {}) {
+        if (sourceUpdatePending.value == true || importFinished.value == true) return
+        sourceUpdatePending.value = true
         execute {
             val group = groupName?.trim()
             val keepName = AppConfig.importKeepName
@@ -152,16 +166,36 @@ class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
                     selectSource.add(source)
                 }
             }
-            SourceHelp.insertBookSource(*selectSource.toTypedArray())
-            ContentProcessor.upReplaceRules()
+            // Once confirmed, finish publication even if the dialog is destroyed after the DB write.
+            withContext(NonCancellable) {
+                SourceHelp.insertBookSource(*selectSource.toTypedArray())
+                ContentProcessor.upReplaceRules()
+                val source = reimportSourceUrl?.takeIf { url ->
+                    selectSource.any { it.bookSourceUrl == url }
+                }?.let { appDb.bookSourceDao.getBookSource(it) }
+                withContext(Main) {
+                    val current = ReadBook.book
+                    if (source != null && current != null && current.bookUrl == reimportBookUrl &&
+                        current.origin == reimportSourceUrl) {
+                        ReadBook.bookSource = source
+                    }
+                    importFinished.value = true
+                }
+            }
+        }.onError {
+            errorLiveData.value = "ImportError:${it.localizedMessage}"
+            AppLog.put("ImportError:${it.localizedMessage}", it)
         }.onFinally {
+            sourceUpdatePending.value = false
             finally.invoke()
         }
     }
 
-    fun importSource(text: String) {
+    fun importSource(text: String, reimportBookUrl: String? = null, reimportSourceUrl: String? = null) {
         if (importStarted) return
         importStarted = true
+        this.reimportBookUrl = reimportBookUrl
+        this.reimportSourceUrl = reimportSourceUrl
         executeLazy {
             val mText = text.trim()
             when {
@@ -198,7 +232,9 @@ class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
     private fun prepareSourceCandidates() {
         executeLazy {
             val rules = appDb.replaceRuleDao.findEnabledBySourceScope()
-            allSources.map { prepareBookSourceImportCandidate(it, rules) }
+            allSources.mapIndexed { index, source ->
+                prepareBookSourceImportCandidate(source, selectedRules(index, rules))
+            }
         }.onSuccess { candidates ->
             sourceCandidates.clear()
             sourceCandidates.addAll(candidates)
@@ -216,22 +252,8 @@ class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
     }
 
     fun setUseSourceReplacement(enabled: Boolean) {
-        if (enabled == useSourceReplacement || sourceUpdatePending.value == true) return
-        val previousMode = useSourceReplacement
-        useSourceReplacement = enabled
-        AppConfig.importReplaceSource = enabled
-        applyCandidateSources()
-        sourceUpdatePending.value = true
-        comparisonSource(
-            preserveManualSelections = true,
-            onError = {
-                useSourceReplacement = previousMode
-                AppConfig.importReplaceSource = previousMode
-                applyCandidateSources()
-            },
-        ) {
-            sourceUpdatePending.value = false
-        }
+        if (enabled == automaticSourceReplacement) return
+        refreshSourceReplacements(automatic = enabled)
     }
 
     private suspend fun importSourceUrl(url: String) {
@@ -301,7 +323,8 @@ class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
                 checkSources.add(localSource)
                 selectStatus.add(
                     canImportSource(index) &&
-                        resolveImportSourceSelection(status, manualSelection)
+                        resolveImportSourceSelection(status, manualSelection,
+                            selectExisting = reimportSourceUrl == allSources[index].bookSourceUrl)
                 )
                 newSourceStatus.add(status.isNew)
                 updateSourceStatus.add(status.isUpdate)
@@ -329,7 +352,7 @@ class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
         sourceUpdatePending.value = true
         executeLazy {
             val rules = appDb.replaceRuleDao.findEnabledBySourceScope()
-            val candidate = prepareBookSourceImportCandidate(source, rules)
+            val candidate = prepareBookSourceImportCandidate(source, selectedRules(index, rules))
             val activeSource = candidate.source(useSourceReplacement)
             val localSource = appDb.bookSourceDao.getBookSourcePart(activeSource.bookSourceUrl)
             val editedStatus = resolveImportBookSourceStatus(
@@ -343,7 +366,8 @@ class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
             allSources[index] = candidate.source(useSourceReplacement)
             checkSources[index] = localSource
             selectStatus[index] = canImportSource(index) &&
-                resolveImportSourceSelection(editedStatus, manualSelections[index])
+                resolveImportSourceSelection(editedStatus, manualSelections[index],
+                    selectExisting = reimportSourceUrl == allSources[index].bookSourceUrl)
             newSourceStatus[index] = editedStatus.isNew
             updateSourceStatus[index] = editedStatus.isUpdate
             successLiveData.value = allSources.size
@@ -355,9 +379,34 @@ class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
         }.start()
     }
 
-    fun refreshSourceReplacements(index: Int, source: BookSource?): Boolean {
-        if (sourceUpdatePending.value == true || index !in sourceCandidates.indices) return false
+    var pendingReplacementDialog: Pair<Boolean, Int>? = null
+
+    fun refreshSourceReplacements(
+        index: Int = -1,
+        source: BookSource? = null,
+        ids: List<Long>? = null,
+        openDialog: Boolean? = null,
+        automatic: Boolean = automaticSourceReplacement,
+    ): Boolean {
+        if (sourceUpdatePending.value == true || (index != -1 && index !in sourceCandidates.indices)) return false
+        if (automatic && (ids != null || openDialog == true)) return false
         val previousCandidates = sourceCandidates.toList()
+        val previousIds = manualRuleIds.toMap()
+        val previousMode = automaticSourceReplacement
+        automaticSourceReplacement = automatic
+        fun restorePreviousState() {
+            automaticSourceReplacement = previousMode
+            sourceCandidates.clear()
+            sourceCandidates.addAll(previousCandidates)
+            manualRuleIds.clear()
+            manualRuleIds.putAll(previousIds)
+            applyCandidateSources()
+        }
+        if (ids != null) {
+            if (index == -1) sourceCandidates.indices.forEach { manualRuleIds[it] = ids }
+            else manualRuleIds[index] = ids
+        }
+        val selectedIds = manualRuleIds.toMap().takeUnless { automatic }
         sourceUpdatePending.value = true
         executeLazy {
             refreshBookSourceImportCandidates(
@@ -365,28 +414,45 @@ class ImportBookSourceViewModel(app: Application) : BaseViewModel(app) {
                 index,
                 source,
                 appDb.replaceRuleDao.findEnabledBySourceScope(),
+                selectedIds,
             )
         }.onSuccess { candidates ->
+            var comparisonSucceeded = true
             sourceCandidates.clear()
             sourceCandidates.addAll(candidates)
             applyCandidateSources()
             comparisonSource(
                 preserveManualSelections = true,
                 onError = {
-                    sourceCandidates.clear()
-                    sourceCandidates.addAll(previousCandidates)
-                    applyCandidateSources()
+                    comparisonSucceeded = false
+                    restorePreviousState()
                 },
             ) {
+                if (comparisonSucceeded) {
+                    AppConfig.importReplaceSource = automatic
+                    if (openDialog != null) pendingReplacementDialog = openDialog to index
+                }
                 sourceUpdatePending.value = false
             }
         }.onError {
             errorLiveData.value = "ImportError:${it.localizedMessage}"
             AppLog.put("ImportError:${it.localizedMessage}", it)
+            restorePreviousState()
             sourceUpdatePending.value = false
         }.start()
         return true
     }
+
+    private fun selectedRules(index: Int, rules: List<io.legado.app.data.entities.ReplaceRule>) =
+        if (automaticSourceReplacement) rules else rules.filter { it.id in manualRuleIds[index].orEmpty() }
+
+    fun selectedManualRuleIds(index: Int = -1): List<Long> = if (index >= 0) manualRuleIds[index].orEmpty()
+        else sourceCandidates.indices.map { manualRuleIds[it].orEmpty().toSet() }
+            .reduceOrNull { all, ids -> all.intersect(ids) }?.toList().orEmpty()
+
+    fun effectiveRuleIds(index: Int = -1): List<Long> = if (!useSourceReplacement) emptyList() else
+        (if (index >= 0) listOfNotNull(sourceCandidates.getOrNull(index)) else sourceCandidates)
+            .flatMap { it.effectiveRuleIds }.distinct()
 
     fun canImportSource(index: Int): Boolean =
         sourceCandidates.getOrNull(index)?.canImport(useSourceReplacement) != false

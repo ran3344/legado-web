@@ -32,6 +32,7 @@ object BackupConfig {
     internal const val sourceContentKey = "backupSources"
     internal const val ruleContentKey = "backupRules"
     internal const val historyContentKey = "backupHistory"
+    internal const val readRecordCoverContentKey = "backupReadRecordCovers"
     internal const val settingContentKey = "backupSettings"
     internal const val persistedCoverContentKey = "backupPersistedCovers"
     internal const val otherCoverContentKey = "backupOtherCovers"
@@ -47,6 +48,7 @@ object BackupConfig {
         sourceContentKey,
         ruleContentKey,
         historyContentKey,
+        readRecordCoverContentKey,
         settingContentKey,
         persistedCoverContentKey,
         otherCoverContentKey,
@@ -61,6 +63,7 @@ object BackupConfig {
         appCtx.getString(R.string.backup_content_sources),
         appCtx.getString(R.string.backup_content_rules),
         appCtx.getString(R.string.backup_content_history),
+        appCtx.getString(R.string.backup_content_read_record_covers),
         appCtx.getString(R.string.backup_content_settings),
         appCtx.getString(R.string.backup_content_persisted_covers),
         appCtx.getString(R.string.backup_content_other_covers),
@@ -122,6 +125,8 @@ object BackupConfig {
     private val readPrefKeys = arrayOf(
         PreferKey.readStyleSelect,
         PreferKey.comicStyleSelect,
+        PreferKey.mangaRightToLeft,
+        PreferKey.showBookMemo,
         PreferKey.shareLayout,
         PreferKey.hideStatusBar,
         PreferKey.hideNavigationBar,
@@ -157,6 +162,8 @@ object BackupConfig {
     )
 
     private val coverPrefKeys = arrayOf(
+        PreferKey.readRecordCover,
+        PreferKey.readRecordCoverDark,
         PreferKey.useDefaultCover,
         PreferKey.loadCoverOnlyWifi,
         PreferKey.coverShowName,
@@ -164,7 +171,14 @@ object BackupConfig {
         PreferKey.coverShowNameN,
         PreferKey.coverShowAuthorN,
         PreferKey.coverHorizontal,
-        PreferKey.coverKeepPunctuation
+        PreferKey.coverTitleAdaptive,
+        PreferKey.coverKeepPunctuation,
+        PreferKey.coverFont,
+        PreferKey.coverCustomFontSize,
+        PreferKey.coverTitleLargeSize,
+        PreferKey.coverTitleSmallSize,
+        PreferKey.coverAuthorLargeSize,
+        PreferKey.coverAuthorSmallSize
     )
 
     fun keyIsNotIgnore(key: String): Boolean {
@@ -208,6 +222,9 @@ object BackupConfig {
             return ignoreConfig[key] == false
         }
         if (key == runtimeSourceCacheContentKey) {
+            return ignoreConfig[key] == false
+        }
+        if (key == readRecordCoverContentKey) {
             return ignoreConfig[key] == false
         }
         return ignoreConfig[key] != true

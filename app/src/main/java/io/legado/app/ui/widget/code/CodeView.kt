@@ -171,6 +171,8 @@ class CodeView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     }
 
     init {
+        // Code is an editor: EmojiCompat reprocesses the entire document after each edit.
+        setEmojiCompatEnabled(false)
         if (mAutoCompleteTokenizer == null) {
             mAutoCompleteTokenizer = KeywordTokenizer()
         }
@@ -197,6 +199,12 @@ class CodeView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
                 event.keyCode == KeyEvent.KEYCODE_MOVE_HOME ||
                 event.keyCode == KeyEvent.KEYCODE_MOVE_END
     }
+
+    // Code is not prose: spell-check spans can emit whole-document accessibility events.
+    override fun isSuggestionsEnabled(): Boolean = false
+
+    // AutoCompleteTextView checks this after every edit, even without an installed adapter.
+    override fun enoughToFilter(): Boolean = adapter != null && super.enoughToFilter()
 
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
         super.onSelectionChanged(selStart, selEnd)

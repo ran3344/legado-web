@@ -7,6 +7,36 @@ import org.junit.Test
 class HighlightGeometryTest {
 
     @Test
+    fun `actual clearance can be smaller than radius while retaining the same ellipse`() {
+        for (radius in listOf(10f, 20f, 40f)) {
+            val minimum = HighlightGeometry.pillClearance(radius, 10f, 40f, 0f, 60f, 2f)
+            assertTrue("Full cap radius is not the minimum ink gap", minimum < radius)
+            assertEquals(radius, HighlightGeometry.pillRadiusX(radius, minimum + 0.001f, 10f, 40f, 0f, 60f, 2f), 0.01f)
+            assertTrue("A smaller gap would require reducing the chosen curve",
+                HighlightGeometry.pillRadiusX(radius, minimum - 0.1f, 10f, 40f, 0f, 60f, 2f) < radius)
+        }
+    }
+
+    @Test
+    fun `pill ends use the largest safe ellipse instead of clipping a circle`() {
+        val border = 2f
+        for (clearance in listOf(3f, 5f, 10f, 32f)) {
+            val radius = HighlightGeometry.pillRadiusX(30f, clearance, 10f, 50f, 0f, 60f, border)
+            assertTrue("Even a narrow available margin retains a curved end", radius > border)
+            assertTrue(radius <= 30f)
+            for (y in 10..50) {
+                val vertical = (y - 30f) / 28f
+                val innerEdge = border + (radius - border) * (1f - kotlin.math.sqrt(1f - vertical * vertical))
+                assertTrue("The whole ink box stays inside the border", innerEdge <= clearance + 0.0001f)
+            }
+        }
+        assertEquals(30f, HighlightGeometry.pillRadiusX(30f, 32f, 10f, 50f, 0f, 60f, border), 0f)
+        assertEquals(0f, HighlightGeometry.pillRadiusX(30f, 2f, 10f, 50f, 0f, 60f, border), 0f)
+        val legacyInnerEdge = border + 28f * (1f - kotlin.math.sqrt(1f - 20f / 28f * 20f / 28f))
+        assertTrue("The unadjusted circular cap must collide with the narrow-margin fixture", legacyInnerEdge > 3f)
+    }
+
+    @Test
     fun `strike and box follow font metrics`() {
         val baseline = 30f
         val ascent = -18f

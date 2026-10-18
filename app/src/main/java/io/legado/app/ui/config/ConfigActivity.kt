@@ -8,6 +8,7 @@ import androidx.fragment.app.Fragment
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceGroup
+import io.legado.app.ui.main.my.MyFragment.MyPreferenceFragment
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
 import io.legado.app.constant.EventBus
@@ -24,10 +25,12 @@ class ConfigActivity : VMBaseActivity<ActivityConfigBinding, ConfigViewModel>() 
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         when (val configTag = intent.getStringExtra("configTag")) {
+            ConfigTag.MY_MORE -> replaceFragment<MyPreferenceFragment>(configTag)
             ConfigTag.OTHER_CONFIG -> replaceFragment<OtherConfigFragment>(configTag)
             ConfigTag.THEME_CONFIG -> replaceFragment<ThemeConfigFragment>(configTag)
             ConfigTag.BACKUP_CONFIG -> replaceFragment<BackupConfigFragment>(configTag)
             ConfigTag.COVER_CONFIG -> replaceFragment<CoverConfigFragment>(configTag)
+            ConfigTag.COVER_FONT_CONFIG -> replaceFragment<CoverFontConfigFragment>(configTag)
             ConfigTag.WELCOME_CONFIG -> replaceFragment<WelcomeConfigFragment>(configTag)
             else -> finish()
         }

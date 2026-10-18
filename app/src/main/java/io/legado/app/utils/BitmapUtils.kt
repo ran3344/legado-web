@@ -15,6 +15,7 @@ import android.util.Size
 import androidx.annotation.RequiresApi
 import com.google.android.renderscript.Toolkit
 import java.io.*
+import java.nio.ByteBuffer
 import kotlin.math.*
 
 
@@ -74,6 +75,7 @@ object BitmapUtils {
     /**
      * 获取图片尺寸。BitmapFactory 不认识的格式（例如 HEIF/HEIC）交给系统解码器探测。
      */
+    @Synchronized
     fun getImageSize(path: String): Size? {
         val file = File(path)
         imageSizeCache.get(path)?.takeIf { it.matches(file) }?.let { return it.size }
@@ -98,6 +100,11 @@ object BitmapUtils {
 
     fun clearImageSizeCache() {
         imageSizeCache.evictAll()
+    }
+
+    @Synchronized
+    fun removeImageSizeCache(path: String) {
+        imageSizeCache.remove(path)
     }
 
     /** 检测网络返回的图片字节，保留 SVG 的调用方回退。 */
@@ -311,7 +318,7 @@ object BitmapUtils {
     private fun isImageWithImageDecoder(bytes: ByteArray): Boolean {
         return try {
             val bitmap = android.graphics.ImageDecoder.decodeBitmap(
-                android.graphics.ImageDecoder.createSource(bytes)
+                android.graphics.ImageDecoder.createSource(ByteBuffer.wrap(bytes))
             ) { decoder, _, _ ->
                 decoder.setAllocator(android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE)
                 decoder.setTargetSize(1, 1)

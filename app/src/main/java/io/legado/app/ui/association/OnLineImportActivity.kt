@@ -1,7 +1,10 @@
 package io.legado.app.ui.association
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.viewModels
+import androidx.fragment.app.DialogFragment
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
 import io.legado.app.databinding.ActivityTranslucenceBinding
@@ -22,6 +25,9 @@ class OnLineImportActivity :
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         viewModel.successLive.observe(this) {
+            if (supportFragmentManager.fragments.any { fragment -> fragment is DialogFragment }) {
+                return@observe
+            }
             when (it.first) {
                 "bookSource" -> showDialogFragment(
                     ImportBookSourceDialog(it.second, true)
@@ -48,6 +54,11 @@ class OnLineImportActivity :
                 "autoTask" -> showDialogFragment(
                     ImportAutoTaskDialog(it.second, true)
                 )
+                "bookshelf" -> {
+                    startActivity(Intent(this, FileAssociationActivity::class.java)
+                        .setAction(Intent.ACTION_VIEW).setData(Uri.parse(it.second)))
+                    finish()
+                }
                 "readConfig" -> finallyDialog(getString(R.string.success), it.second)
             }
         }

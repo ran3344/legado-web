@@ -4,9 +4,6 @@ import io.legado.app.data.entities.Book
 import io.legado.app.service.buildHttpTtsCacheFileName
 import io.legado.app.ui.book.info.normalizeWebFileName
 import io.legado.app.ui.widget.image.coverBitmapCacheKey
-import io.legado.app.ui.widget.image.coverTitleColumnOffsets
-import io.legado.app.ui.widget.image.coverTitleColumnStartY
-import io.legado.app.ui.widget.image.coverTitleTextSize
 import io.legado.app.ui.widget.image.normalizeCoverText
 import io.legado.app.utils.calculateSvgBitmapSize
 import io.legado.app.utils.isForegroundServiceStartDenied
@@ -117,59 +114,19 @@ class RuntimeMediaStabilityTest {
     }
 
     @Test
-    fun textCoverKeepsOneTitleSizeAcrossColumns() {
-        val width = 105f
-        val height = 140f
-        val largeTextHeight = 18f
-
-        for (characterCount in 4..7) {
-            assertEquals(
-                width / 7,
-                coverTitleTextSize(width, height, characterCount, largeTextHeight),
-                0.001f
-            )
-        }
-        assertEquals(
-            width / 9,
-            coverTitleTextSize(width, height, 8, largeTextHeight),
-            0.001f
-        )
-
+    fun verticalTextCoverRestoresOriginalStaggeredLayout() {
         val source = listOf(File("src/main/java"), File("app/src/main/java"))
             .first { it.isDirectory }
             .resolve("io/legado/app/ui/widget/image/CoverImageView.kt")
             .readText()
-        val titleLoop = source.substringAfter("titleColumns.forEachIndexed")
+        val titleLoop = source.substringAfter("var startY = viewHeight * 0.2f")
             .substringBefore("if (!drawAuthor)")
 
-        assertFalse(titleLoop.contains("namePaint.textSize ="))
-    }
-
-    @Test
-    fun verticalCoverTitleColumnsShareTheLastBaseline() {
-        val top = 28f
-        val textHeight = 10f
-        val columns = coverTitleColumnOffsets(20, 140f, textHeight)
-        assertEquals(listOf(9, 8, 3), columns.map { it.size })
-        val maxColumnBottom = columns.maxOf { it.last() }
-        val starts = columns.map {
-            coverTitleColumnStartY(top, maxColumnBottom, it.last())
-        }
-
-        assertEquals(listOf(top, top + textHeight, top + textHeight * 6), starts)
-        val bottoms = starts.zip(columns).map { (start, offsets) ->
-            start + offsets.last()
-        }
-        bottoms.forEach { assertEquals(bottoms.first(), it, 0.001f) }
-
-        assertEquals(listOf(9, 3), coverTitleColumnOffsets(12, 140f, textHeight).map { it.size })
-        val singleColumn = coverTitleColumnOffsets(11, 140f, textHeight).single()
-        assertEquals(11, singleColumn.size)
-        assertEquals(98f, singleColumn.last(), 0.001f)
-        assertTrue(coverTitleColumnOffsets(0, 140f, textHeight).isEmpty())
-        assertTrue(coverTitleColumnOffsets(3, 0f, textHeight).isEmpty())
-        assertTrue(coverTitleColumnOffsets(3, 140f, 0f).isEmpty())
-        assertEquals(top, coverTitleColumnStartY(top, 80f, 90f), 0.001f)
+        assertTrue(titleLoop.contains("namePaint.textSize = viewWidth / 7"))
+        assertTrue(titleLoop.contains("?: (viewWidth / 10)"))
+        assertTrue(titleLoop.contains("?: (viewWidth / 9)"))
+        assertTrue(titleLoop.contains("startX += namePaint.textSize"))
+        assertFalse(titleLoop.contains("titleColumns"))
     }
 
     @Test
@@ -188,6 +145,14 @@ class RuntimeMediaStabilityTest {
         assertNotEquals(
             coverBitmapCacheKey("Title", "Author", 105, 140, true, true, 1, 2),
             coverBitmapCacheKey("Title", "Author", 105, 140, true, true, 3, 4)
+        )
+        assertNotEquals(
+            coverBitmapCacheKey("Title", "Author", 105, 140, true, true, 1, 2, true),
+            coverBitmapCacheKey("Title", "Author", 105, 140, true, true, 1, 2, false)
+        )
+        assertNotEquals(
+            coverBitmapCacheKey("Title", "Author", 105, 140, true, true, 1, 2, fontCacheKey = "font-a"),
+            coverBitmapCacheKey("Title", "Author", 105, 140, true, true, 1, 2, fontCacheKey = "font-b")
         )
     }
 
@@ -217,6 +182,8 @@ class RuntimeMediaStabilityTest {
             .takeIf { it.isFile }
             ?: File("app/src/main/java/io/legado/app/ui/config/CoverConfigFragment.kt")
         assertTrue(configSource.readText().contains("postEvent(EventBus.BOOKSHELF_REFRESH, \"\")"))
+        val fontConfigSource = configSource.resolveSibling("CoverFontConfigFragment.kt").readText()
+        assertTrue(fontConfigSource.contains("PreferKey.coverTitleAdaptive"))
     }
 
     @Test

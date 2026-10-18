@@ -41,6 +41,7 @@ import io.legado.app.ui.about.AppLogDialog
 import io.legado.app.ui.book.search.SearchActivity
 import io.legado.app.ui.book.source.debug.BookSourceDebugActivity
 import io.legado.app.ui.code.CodeEditActivity
+import io.legado.app.ui.code.CodeTextTransfer
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.login.SourceLoginActivity
 import io.legado.app.ui.qrcode.QrCodeResult
@@ -97,6 +98,7 @@ class BookSourceEditActivity :
     private var pendingResultAvailable = false
     private var pendingResultText: String? = null
     private var pendingResultCursor = -1
+    private var pendingEditTextPath: String? = null
 
     private val jsSourceEdit = registerForActivityResult(
         StartActivityContract(JsSourceEditActivity::class.java)
@@ -182,9 +184,14 @@ class BookSourceEditActivity :
     }
 
     private val textEditLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        pendingEditTextPath?.let { CodeTextTransfer.delete(this, it) }
+        pendingEditTextPath = null
         if (result.resultCode == RESULT_OK) {
             pendingResultAvailable = true
             pendingResultText = result.data?.getStringExtra("text")
+                ?: result.data?.getStringExtra("textFile")?.let { path ->
+                    CodeTextTransfer.read(this, path).also { CodeTextTransfer.delete(this, path) }
+                }
             pendingResultCursor = result.data?.getIntExtra("cursorPosition", -1) ?: -1
             applyPendingEditResult()
         } else {
@@ -214,12 +221,22 @@ class BookSourceEditActivity :
     private fun openTextEditor(editEntity: EditEntity, cursorPosition: Int) {
         pendingEditTabPosition = binding.tabLayout.selectedTabPosition
         pendingEditKey = editEntity.key
+        val text = editEntity.value.orEmpty()
+        val textPath = text.takeIf { it.length > EditSafety.MAX_INLINE_TEXT_LENGTH }
+            ?.let { CodeTextTransfer.write(this, it) }
+        pendingEditTextPath = textPath
         val intent = Intent(this, CodeEditActivity::class.java).apply {
-            putExtra("text", editEntity.value.orEmpty())
+            putExtra("useTextFile", true)
+            if (textPath != null) putExtra("textFile", textPath) else putExtra("text", text)
             putExtra("title", editEntity.hint)
             putExtra("cursorPosition", cursorPosition)
         }
-        textEditLauncher.launch(intent)
+        runCatching { textEditLauncher.launch(intent) }
+            .onFailure {
+                CodeTextTransfer.delete(this, textPath)
+                pendingEditTextPath = null
+                throw it
+            }
     }
 
     private fun findEditEntity(tabPosition: Int, key: String): EditEntity? {
@@ -574,6 +591,8 @@ class BookSourceEditActivity :
             add(EditEntity("webJs", cr.webJs, R.string.rule_web_js))
             add(EditEntity("payAction", cr.payAction, R.string.rule_pay_action))
             add(EditEntity("callBackJs", cr.callBackJs, R.string.rule_call_back))
+            add(EditEntity("contentBatch", cr.contentBatch, R.string.rule_content_batch))
+            add(EditEntity("maxBatchSize", cr.maxBatchSize?.toString(), R.string.rule_max_batch_size))
         }
         // 段评
         val rr = bs.ruleReview ?: ReviewRule()
@@ -800,6 +819,8 @@ class BookSourceEditActivity :
                 "imageDecode" -> contentRule.imageDecode = it.value
                 "payAction" -> contentRule.payAction = it.value
                 "callBackJs" -> contentRule.callBackJs = it.value
+                "contentBatch" -> contentRule.contentBatch = it.value
+                "maxBatchSize" -> contentRule.maxBatchSize = it.value?.toIntOrNull()
             }
         }
         reviewEntities.forEach {

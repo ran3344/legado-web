@@ -10,6 +10,8 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.replaceBookAfterSourceChange
+import io.legado.app.data.entities.saveReadRecordSnapshot
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.book.BookHelp
@@ -101,6 +103,7 @@ class BookshelfManageViewModel(application: Application) : BaseViewModel(applica
         deleteRemote: Boolean = false,
     ) {
         execute {
+            books.forEach { it.saveReadRecordSnapshot() }
             appDb.bookDao.delete(*books.toTypedArray())
             books.forEach {
                 if (it.isLocal) {
@@ -166,9 +169,8 @@ class BookshelfManageViewModel(application: Application) : BaseViewModel(applica
                         AppLog.put("获取目录出错\n${it.localizedMessage}", it, true)
                     }.getOrNull()?.let { toc ->
                         book.migrateTo(newBook, toc)
-                        book.removeType(BookType.updateError)
-                        appDb.bookDao.insert(newBook)
-                        appDb.bookChapterDao.insert(*toc.toTypedArray())
+                        newBook.removeType(BookType.updateError)
+                        replaceBookAfterSourceChange(book, newBook, toc, clearActiveReader = false)
                     }
                 delay(changeSourceDelay)
             }

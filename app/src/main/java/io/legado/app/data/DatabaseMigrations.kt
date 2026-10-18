@@ -7,6 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.BookSourceType
 import io.legado.app.constant.BookType
+import io.legado.app.data.entities.BOOK_SOURCE_PART_VIEW
 import io.legado.app.help.book.isLegacyPersistedCoverPath
 import java.util.UUID
 
@@ -22,8 +23,77 @@ object DatabaseMigrations {
             migration_31_32, migration_32_33, migration_33_34, migration_34_35,
             migration_35_36, migration_36_37, migration_37_38, migration_38_39,
             migration_39_40, migration_40_41, migration_41_42, migration_42_43,
-            migration_100_101,
+            migration_100_101, migration_104_105, migration_105_106, migration_106_107,
+            migration_107_108, migration_108_109, migration_109_110,
         )
+    }
+
+    private val migration_109_110 = object : Migration(109, 110) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("""CREATE INDEX IF NOT EXISTS index_readRecord_snapshot
+                ON readRecord(bookName, author, lastRead DESC, deviceId)""")
+        }
+    }
+
+    private val migration_108_109 = object : Migration(108, 109) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE highlightRules ADD COLUMN `group` TEXT DEFAULT ''")
+        }
+    }
+
+    private val migration_107_108 = object : Migration(107, 108) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("""CREATE TABLE book_memos (
+                bookUrl TEXT NOT NULL, content TEXT NOT NULL, updatedAt INTEGER NOT NULL,
+                PRIMARY KEY(bookUrl)
+            )""".trimIndent())
+        }
+    }
+
+    private val migration_106_107 = object : Migration(106, 107) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("""CREATE TABLE readRecord_by_author (
+                deviceId TEXT NOT NULL, bookName TEXT NOT NULL, author TEXT NOT NULL DEFAULT '',
+                readTime INTEGER NOT NULL DEFAULT 0, lastRead INTEGER NOT NULL DEFAULT 0,
+                lastChapterTitle TEXT, lastChapterIndex INTEGER NOT NULL DEFAULT -1,
+                lastChapterPos INTEGER NOT NULL DEFAULT 0, coverUrl TEXT,
+                PRIMARY KEY(deviceId, bookName, author))""")
+            // Keep legacy blank and combined authors intact: their time cannot be split truthfully.
+            db.execSQL("""INSERT INTO readRecord_by_author
+                (deviceId, bookName, author, readTime, lastRead, lastChapterTitle,
+                 lastChapterIndex, lastChapterPos, coverUrl)
+                SELECT deviceId, bookName, author, readTime, lastRead, lastChapterTitle,
+                       lastChapterIndex, lastChapterPos, coverUrl FROM readRecord""")
+            db.execSQL("DROP TABLE readRecord")
+            db.execSQL("ALTER TABLE readRecord_by_author RENAME TO readRecord")
+        }
+    }
+
+    // Version 105 was released without a checked-in schema export. Preserve its
+    // exact additive migration explicitly so older installs can still upgrade.
+    private val migration_104_105 = object : Migration(104, 105) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE readRecord ADD COLUMN lastChapterTitle TEXT")
+            db.execSQL("ALTER TABLE readRecord ADD COLUMN lastChapterIndex INTEGER NOT NULL DEFAULT -1")
+            db.execSQL("ALTER TABLE readRecord ADD COLUMN lastChapterPos INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE readRecord ADD COLUMN coverUrl TEXT")
+        }
+    }
+
+    private val migration_105_106 = object : Migration(105, 106) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("""CREATE TABLE IF NOT EXISTS book_source_check_states (
+                bookSourceUrl TEXT NOT NULL, revision TEXT NOT NULL, sourceRevision TEXT NOT NULL, status TEXT NOT NULL,
+                checkedAt INTEGER NOT NULL, detail TEXT NOT NULL, PRIMARY KEY(bookSourceUrl),
+                FOREIGN KEY(bookSourceUrl) REFERENCES book_sources(bookSourceUrl)
+                ON UPDATE NO ACTION ON DELETE CASCADE)""")
+            // Old group labels cannot establish that today's rules were checked.
+            db.execSQL("""INSERT INTO book_source_check_states
+                SELECT bookSourceUrl, lower(hex(randomblob(16))), lower(hex(randomblob(16))), 'NEEDS_CHECK', 0, ''
+                FROM book_sources""")
+            db.execSQL("DROP VIEW IF EXISTS book_sources_part")
+            db.execSQL("CREATE VIEW `book_sources_part` AS $BOOK_SOURCE_PART_VIEW")
+        }
     }
 
     private val migration_10_11 = object : Migration(10, 11) {

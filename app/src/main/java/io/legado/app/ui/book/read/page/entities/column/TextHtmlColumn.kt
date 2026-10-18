@@ -27,6 +27,9 @@ data class TextHtmlColumn(
     val linkUrl: String?
 ) : TextBaseColumn {
 
+    // Reflow must not inherit the previous line's added justification space.
+    val nativeAdvance: Float = end - start
+
     override val positionLength: Int
         get() = if (charData == HR_PLACE_STR) HR_PLACE_CHAR.length else charData.length
 
@@ -43,6 +46,12 @@ data class TextHtmlColumn(
             if (field != value) {
                 textLine.invalidate()
             }
+            field = value
+        }
+
+    override var isReadAloud: Boolean = false
+        set(value) {
+            if (field != value) textLine.invalidate()
             field = value
         }
 
@@ -81,7 +90,7 @@ data class TextHtmlColumn(
         val style = highlightStyle
         val styleTextColor = style?.textColor ?: 0
         val textColor = when {
-            textLine.isReadAloud || isSearchResult || linkUrl != null -> {
+            isReadAloud || isSearchResult || linkUrl != null -> {
                 ReadBookConfig.textAccentColor
             }
 
@@ -94,7 +103,7 @@ data class TextHtmlColumn(
         }
         val styledPaint = style?.takeIf {
             it.textColor != 0 || it.bold || it.italic || it.shadow != null ||
-                it.resolvedFontPath.isNotEmpty()
+                it.resolvedFontPath.isNotEmpty() || it.changesTextMetrics
         }?.let { HighlightDraw.obtainTextPaint(textPaint, it, textColor, charData) }
         drawText(canvas, y, styledPaint ?: textPaint)
         styledPaint?.let(HighlightDraw::recycleTextPaint)

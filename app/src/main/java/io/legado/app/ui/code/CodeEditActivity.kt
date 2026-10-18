@@ -8,27 +8,35 @@ import android.util.Base64
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.LinearLayout
 import androidx.activity.addCallback
 import androidx.activity.viewModels
 import androidx.annotation.RequiresApi
+import androidx.annotation.Keep
 import androidx.core.view.isGone
 import androidx.core.view.isVisible
 import androidx.core.widget.addTextChangedListener
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.textfield.TextInputEditText
 import io.github.rosemoe.sora.event.PublishSearchResultEvent
+import io.github.rosemoe.sora.event.ColorSchemeUpdateEvent
 import io.github.rosemoe.sora.event.SelectionChangeEvent
 import io.github.rosemoe.sora.langs.textmate.registry.ThemeRegistry
 import io.github.rosemoe.sora.util.regex.RegexBackrefGrammar
 import io.github.rosemoe.sora.widget.CodeEditor
 import io.github.rosemoe.sora.widget.EditorSearcher
 import io.github.rosemoe.sora.widget.EditorSearcher.SearchOptions
+import io.github.rosemoe.sora.widget.component.EditorTextActionWindow
+import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
 import io.legado.app.constant.PreferKey
@@ -38,7 +46,7 @@ import io.legado.app.help.config.ThemeConfig
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.backgroundColor
-import io.legado.app.lib.theme.primaryTextColor
+import io.legado.app.lib.theme.getPrimaryTextColor
 import io.legado.app.ui.about.AppLogDialog
 import io.legado.app.ui.code.config.ChangeThemeDialog
 import io.legado.app.ui.code.config.SettingsDialog
@@ -48,6 +56,7 @@ import io.legado.app.utils.ColorUtils
 import io.legado.app.utils.imeHeight
 import io.legado.app.utils.putPrefBoolean
 import io.legado.app.utils.setOnApplyWindowInsetsListenerCompat
+import io.legado.app.utils.share
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.showHelp
 import io.legado.app.utils.toastOnUi
@@ -90,6 +99,8 @@ class CodeEditActivity :
     private var safeEditorReadGeneration = 0
     private var safeEditorLoadTimeout: Runnable? = null
     private var safeEditorReadTimeout: Runnable? = null
+    private var editorReady = false
+    private var textActions: CodeTextActions? = null
 
     private enum class SafeEditorStatus {
         IDLE,
@@ -103,19 +114,31 @@ class CodeEditActivity :
     private var themeIndex = -1
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
-        onBackPressedDispatcher.addCallback(this) { finish() }
+        // SavedStateHandle is available only after BaseActivity has called super.onCreate.
+        if (!isInitialized) {
+            viewModel.initSora()
+            isInitialized = true
+        }
+        upTheme(if (isDark) AppConfig.editThemeDark else AppConfig.editTheme)
+        onBackPressedDispatcher.addCallback(this) {
+            if (textActions?.dismiss() != true) finish()
+        }
         softKeyboardTool.attachToWindow(window)
         editor.colorScheme = TextMateColorScheme2.create(ThemeRegistry.getInstance()) //先设置颜色,避免一开始的白屏
         viewModel.initData(intent) {
+            if (isDestroyed) return@initData
             viewModel.title?.let {
                 binding.titleBar.title = it
             }
-            useSafeEditor = EditSafety.isCombiningHeavy(viewModel.initialText)
+            val text = viewModel.editorDraft?.text ?: viewModel.initialText
+            viewModel.editorDraft?.let { viewModel.cursorPosition = it.cursorPosition }
+            useSafeEditor = EditSafety.requiresSafeEditor(text)
             if (useSafeEditor) {
-                setupSafeEditor(viewModel.initialText)
+                setupSafeEditor(text)
             } else {
-                setupCodeEditor(viewModel.initialText)
+                setupCodeEditor(text)
             }
+            editorReady = true
             invalidateOptionsMenu()
         }
         initView()
@@ -136,14 +159,44 @@ class CodeEditActivity :
             setEditorLanguage(viewModel.language)
             upEdit(AppConfig.editFontScale, null, AppConfig.editAutoWrap)
             props.maxIPCTextLength = 64 * 1024
+            setupTextActions()
             setText(text)
             editable = viewModel.writable
             requestFocus()
-            postDelayed({
-                val pos = cursor.indexer.getCharPosition(viewModel.cursorPosition)
-                setSelection(pos.line, pos.column, true)
-            }, 360) // 延时等待长文本完成布局，再恢复光标位置
+            // Restore before accepting input; a delayed restore can overwrite a new selection.
+            val pos = cursor.indexer.getCharPosition(viewModel.cursorPosition.coerceIn(0, text.length))
+            setSelection(pos.line, pos.column, true)
         }
+    }
+
+    private fun setupTextActions() {
+        val actions = editor.getComponent(EditorTextActionWindow::class.java)
+        val copy = actions.view.findViewById<ImageButton>(io.github.rosemoe.sora.R.id.panel_btn_copy)
+        val buttons = copy.parent as ViewGroup
+        val shareButton = ImageButton(this).apply {
+            id = R.id.code_share_selection
+            contentDescription = getString(R.string.share)
+            setImageResource(R.drawable.ic_share)
+            background = copy.background?.constantState?.newDrawable()?.mutate()
+            setPadding(copy.paddingLeft, copy.paddingTop, copy.paddingRight, copy.paddingBottom)
+            layoutParams = LinearLayout.LayoutParams(copy.layoutParams)
+            setOnClickListener {
+                val cursor = editor.cursor
+                if (cursor.isSelected) {
+                    share(editor.text.subSequence(cursor.left, cursor.right).toString())
+                    actions.dismiss()
+                }
+            }
+        }
+        buttons.addView(shareButton, buttons.indexOfChild(copy) + 1)
+        fun updateShareButton() {
+            shareButton.isVisible = editor.cursor.isSelected
+            shareButton.setColorFilter(editor.colorScheme.getColor(EditorColorScheme.TEXT_ACTION_WINDOW_ICON_COLOR))
+        }
+        updateShareButton()
+        editor.subscribeEvent(SelectionChangeEvent::class.java) { _, _ -> updateShareButton() }
+        editor.subscribeEvent(ColorSchemeUpdateEvent::class.java) { _, _ -> updateShareButton() }
+        textActions = CodeTextActions(editor)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -165,6 +218,29 @@ class CodeEditActivity :
                 setSupportMultipleWindows(false)
                 blockNetworkLoads = true
             }
+            // This WebView only loads our network-disabled, locally generated editor document.
+            addJavascriptInterface(object {
+                @Keep
+                @JavascriptInterface
+                fun changed(text: String, cursor: Int, dirty: Boolean) {
+                    if (!isDestroyed) {
+                        viewModel.editorDraft = SafeEditorContent(text, cursor, dirty)
+                            .resolveAgainst(viewModel.initialText)
+                    }
+                }
+
+                @Keep
+                @JavascriptInterface
+                fun selected(cursor: Int) {
+                    if (!isDestroyed) {
+                        viewModel.editorDraft = viewModel.editorDraft?.let {
+                            // A clean textarea normalizes CRLF; preserve the source offset contract.
+                            if (it.dirty) it.copy(cursorPosition = cursor.coerceIn(0, it.text.length))
+                            else SafeEditorContent(it.text, cursor, false).resolveAgainst(viewModel.initialText)
+                        }
+                    }
+                }
+            }, "EditorDraft")
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String?) {
                     if (safeEditor !== view) return
@@ -269,11 +345,12 @@ class CodeEditActivity :
             Base64.NO_WRAP
         )
         val background = ColorUtils.intToString(backgroundColor)
-        val foreground = ColorUtils.intToString(primaryTextColor)
+        val foreground = ColorUtils.intToString(getPrimaryTextColor(ColorUtils.isColorLight(backgroundColor)))
         val readOnly = if (viewModel.writable) "" else " readonly"
         val writable = viewModel.writable
         val wrap = if (AppConfig.editAutoWrap) "soft" else "off"
-        val cursorPosition = viewModel.cursorPosition.coerceAtLeast(0)
+        val cursorPosition = text.take(viewModel.cursorPosition.coerceIn(0, text.length))
+            .replace("\r\n", "\n").replace('\r', '\n').length
         return """
             <!doctype html>
             <html>
@@ -329,10 +406,20 @@ class CodeEditActivity :
                     var editor = document.getElementById("code");
                     editor.value = decodeBase64("$encodedText");
                     var initialValue = editor.value;
+                    var initialDraftDirty = ${viewModel.editorDraft?.dirty == true};
                     var editorWritable = $writable;
                     var initialCursor = Math.min(editor.value.length, $cursorPosition);
                     editor.setSelectionRange(initialCursor, initialCursor);
                     editor.focus();
+                    function rememberDraft() {
+                        EditorDraft.changed(editor.value, editor.selectionStart || 0,
+                            editor.value !== initialValue || initialDraftDirty);
+                    }
+                    editor.addEventListener("input", rememberDraft);
+                    document.addEventListener("selectionchange", function() {
+                        EditorDraft.selected(editor.selectionStart || 0);
+                    });
+                    rememberDraft();
 
                     window.__setEditorReadOnly = function(readOnly) {
                         if (readOnly) {
@@ -351,7 +438,7 @@ class CodeEditActivity :
                         return JSON.stringify({
                             text: editor.value,
                             cursorPosition: editor.selectionStart || 0,
-                            dirty: editor.value !== initialValue
+                            dirty: editor.value !== initialValue || initialDraftDirty
                         });
                     };
 
@@ -367,6 +454,7 @@ class CodeEditActivity :
                             var cursor = start + value.length;
                             editor.setSelectionRange(cursor, cursor);
                         }
+                        rememberDraft();
                         return true;
                     };
                 </script>
@@ -460,7 +548,20 @@ class CodeEditActivity :
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (editorReady) {
+            if (!useSafeEditor) {
+                val text = editor.text.toString()
+                viewModel.editorDraft = SafeEditorContent(text, editor.cursor.left, text != viewModel.initialText)
+            }
+            runCatching { viewModel.persistEditorDraft() }
+                .onFailure { toastOnUi(it.localizedMessage) }
+        }
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onDestroy() {
+        textActions?.dismiss()
         editorSearcher.stopSearch()
         editor.release()
         cancelSafeEditorRead(restoreEditing = false)
@@ -529,9 +630,7 @@ class CodeEditActivity :
                     intent.getBooleanExtra("returnUnchangedText", false)
                 if (returnText || cursorPos > 0) {
                     val result = Intent().apply {
-                        if (returnText) {
-                            putExtra("text", text)
-                        }
+                        if (returnText) putEditorText(this, text)
                         putExtra("cursorPosition", cursorPos)
                     }
                     setResult(RESULT_OK, result)
@@ -555,12 +654,22 @@ class CodeEditActivity :
             }
             else -> {
                 val result = Intent().apply {
-                    putExtra("text", text)
+                    putEditorText(this, text)
                     putExtra("cursorPosition", cursorPos)
                 }
                 setResult(RESULT_OK, result)
                 super.finish()
             }
+        }
+    }
+
+    private fun putEditorText(intent: Intent, text: String) {
+        if (this.intent.getBooleanExtra("useTextFile", false) &&
+            text.length > io.legado.app.ui.widget.code.EditSafety.MAX_INLINE_TEXT_LENGTH
+        ) {
+            intent.putExtra("textFile", CodeTextTransfer.write(this, text))
+        } else {
+            intent.putExtra("text", text)
         }
     }
 
@@ -583,7 +692,7 @@ class CodeEditActivity :
 
     private fun returnText(action: String, text: String, cursorPosition: Int) {
         val result = Intent().apply {
-            putExtra("text", text)
+            putEditorText(this, text)
             putExtra("cursorPosition", cursorPosition)
             putExtra(EXTRA_RESULT_ACTION, action)
         }
@@ -614,21 +723,6 @@ class CodeEditActivity :
         if (editNonPrintable != null) {
             editor.nonPrintablePaintingFlags = editNonPrintable
         }
-    }
-
-    override fun initTheme() {
-        super.initTheme()
-        if (!isInitialized) {
-            viewModel.initSora()
-            isInitialized = true
-        }
-        val index = if (isDark) {
-            AppConfig.editThemeDark
-        } else {
-            AppConfig.editTheme
-        }
-        upTheme(index)
-        themeIndex = index
     }
 
     override fun upTheme(index: Int) {

@@ -21,6 +21,7 @@ import io.legado.app.exception.TocEmptyException
 import io.legado.app.help.IntentData
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.source.exploreKinds
+import io.legado.app.help.source.SuppressSourceNavigation
 import io.legado.app.model.CheckSource
 import io.legado.app.model.CheckSourceResult
 import io.legado.app.model.CheckSourceStatus
@@ -43,6 +44,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.htmlunit.corejs.javascript.WrappedException
 import splitties.init.appCtx
@@ -67,12 +69,11 @@ internal fun parseCheckSourceEndpoint(domain: String): Pair<String, Int>? {
 class CheckSourceService : BaseService() {
     private data class CheckTarget(
         val selected: BookSourcePart,
-        val original: BookSource,
         val source: BookSource,
     )
 
     private data class CheckOutcome(
-        val succeeded: Boolean,
+        val status: CheckSourceStatus,
         val message: String,
     )
 
@@ -187,7 +188,8 @@ class CheckSourceService : BaseService() {
                             ),
                         )
 
-                        source.lastUpdateTime != selected.lastUpdateTime ->
+                        source.lastUpdateTime != selected.lastUpdateTime ||
+                            appDb.bookSourceDao.getCheckState(source.bookSourceUrl)?.revision != selected.checkRevision ->
                             Debug.recordCheckResult(
                                 sessionId,
                                 selected.bookSourceUrl,
@@ -197,7 +199,7 @@ class CheckSourceService : BaseService() {
                                 ),
                             )
 
-                        else -> emit(CheckTarget(selected, source.copy(), source))
+                        else -> emit(CheckTarget(selected, source))
                     }
                 }
             }.onStart {
@@ -208,7 +210,7 @@ class CheckSourceService : BaseService() {
             }.mapParallel(threadCount) {
                 it to checkSource(it.source, sessionId)
             }.onEach { (target, outcome) ->
-                val (selected, original, source) = target
+                val (selected, source) = target
                 finishCount++
                 notificationMsg = getString(
                     R.string.progress_show,
@@ -217,17 +219,16 @@ class CheckSourceService : BaseService() {
                     originSize
                 )
                 upNotification()
-                val updated = appDb.bookSourceDao.updateCheckResult(
-                    source.bookSourceUrl,
-                    source.bookSourceGroup,
-                    source.bookSourceComment,
-                    source.respondTime,
-                    selected.lastUpdateTime,
-                    original.bookSourceGroup,
-                    original.bookSourceComment,
-                    original.respondTime,
+                currentCoroutineContext().ensureActive()
+                val detail = if (outcome.status == CheckSourceStatus.PASSED) "" else listOf(
+                    source.getInvalidGroupNames(), outcome.message,
+                    if (CheckSource.wSourceComment) source.bookSourceComment
+                        ?.lineSequence()?.firstOrNull { it.startsWith("// Error: ") }.orEmpty() else "",
+                ).filter { it.isNotEmpty() }.distinct().joinToString(" | ")
+                val updated = appDb.bookSourceDao.completeCheck(
+                    selected, outcome.status.name, detail, source.respondTime,
                 )
-                if (updated == 0) {
+                if (!updated) {
                     val detail = "校验结果未写回：书源已变更或删除"
                     Debug.updateCheckMessage(
                         sessionId,
@@ -241,27 +242,10 @@ class CheckSourceService : BaseService() {
                     )
                 } else {
                     Debug.updateFinalMessage(sessionId, source.bookSourceUrl, outcome.message)
-                    val status = if (outcome.succeeded) {
-                        CheckSourceStatus.PASSED
-                    } else {
-                        CheckSourceStatus.FAILED
-                    }
-                    val detail = if (outcome.succeeded) {
-                        ""
-                    } else {
-                        listOf(
-                            source.getInvalidGroupNames(),
-                            source.bookSourceComment
-                                ?.lineSequence()
-                                ?.firstOrNull { it.startsWith("// Error: ") }
-                                .orEmpty(),
-                            outcome.message,
-                        ).filter { it.isNotEmpty() }.distinct().joinToString(" | ")
-                    }
                     Debug.recordCheckResult(
                         sessionId,
                         source.bookSourceUrl,
-                        CheckSourceResult(status, detail),
+                        CheckSourceResult(outcome.status, detail),
                     )
                 }
             }.collect()
@@ -288,14 +272,17 @@ class CheckSourceService : BaseService() {
 
     private suspend fun checkSource(source: BookSource, sessionId: Long): CheckOutcome {
         var resultMessage = "校验成功"
-        var succeeded = true
+        var status = CheckSourceStatus.PASSED
+        var domainUnchecked = false
         kotlin.runCatching {
             withTimeout(CheckSource.timeout) {
-                doCheckSource(source, sessionId)
+                domainUnchecked = withContext(SuppressSourceNavigation) {
+                    doCheckSource(source, sessionId)
+                }
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
-            succeeded = false
+            status = CheckSourceStatus.FAILED
             when (it) {
                 is TimeoutCancellationException -> source.addGroup("校验超时")
                 is ScriptException, is WrappedException -> source.addGroup("js失效")
@@ -306,8 +293,16 @@ class CheckSourceService : BaseService() {
             }
             resultMessage = "校验失败:${it.localizedMessage}"
         }
-        source.respondTime = Debug.getRespondTime(sessionId, source.bookSourceUrl, succeeded)
-        return CheckOutcome(succeeded, resultMessage)
+        if (status == CheckSourceStatus.PASSED && domainUnchecked) {
+            status = CheckSourceStatus.UNCHECKABLE
+            resultMessage = "无法校验:源地址不是http链接"
+        }
+        source.respondTime = Debug.getRespondTime(
+            sessionId,
+            source.bookSourceUrl,
+            status != CheckSourceStatus.FAILED,
+        )
+        return CheckOutcome(status, resultMessage)
     }
 
     private suspend fun isDomainReachable(endpoint: Pair<String, Int>): Boolean {
@@ -322,7 +317,8 @@ class CheckSourceService : BaseService() {
         }.getOrDefault(false)
     }
 
-    private suspend fun doCheckSource(source: BookSource, sessionId: Long) {
+    private suspend fun doCheckSource(source: BookSource, sessionId: Long): Boolean {
+        var domainUnchecked = false
         Debug.startChecking(sessionId, source)
         source.removeInvalidGroups()
         if (CheckSource.wSourceComment) {
@@ -333,7 +329,7 @@ class CheckSourceService : BaseService() {
             val domain = source.bookSourceUrl
             val endpoint = parseCheckSourceEndpoint(domain)
             if (endpoint == null) {
-                throw NoStackTraceException("源地址不是http链接")
+                domainUnchecked = true
             } else if (isDomainReachable(endpoint)) {
                 source.removeGroup("域名失效")
             } else {
@@ -354,7 +350,7 @@ class CheckSourceService : BaseService() {
                     checkBook(searchBooks.first().toBook(), source)
                 }
             } else {
-                source.addGroup("搜索链接规则为空")
+                throw NoStackTraceException("搜索链接规则为空")
             }
         }
         //校验发现书籍
@@ -363,7 +359,7 @@ class CheckSourceService : BaseService() {
                 !it.url.isNullOrBlank()
             }?.url
             if (url.isNullOrBlank()) {
-                source.addGroup("发现规则为空")
+                throw NoStackTraceException("发现规则为空")
             } else {
                 source.removeGroup("发现规则为空")
                 val exploreBooks = WebBook.exploreBookAwait(source, url)
@@ -379,6 +375,7 @@ class CheckSourceService : BaseService() {
         if (finalCheckMessage.isNotBlank()) {
             throw NoStackTraceException(finalCheckMessage)
         }
+        return domainUnchecked
     }
 
     /**

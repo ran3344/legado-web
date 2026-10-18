@@ -13,6 +13,10 @@ try {
 } catch {}
 const SECOND = 1000
 const protectedSourcePaths = new Set([
+  'getBookSourcesForManagement',
+  'getBookSourceCheckStates',
+  'startBookSourceCheck',
+  'stopBookSourceCheck',
   'saveJsSource',
   'saveBookSource',
   'saveBookSources',

@@ -2,6 +2,7 @@
 
 package io.legado.app.ui.main
 
+import android.graphics.Rect
 import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.text.format.DateUtils
@@ -9,6 +10,7 @@ import android.view.MenuItem
 import android.view.ViewGroup
 import androidx.activity.addCallback
 import androidx.activity.viewModels
+import androidx.core.view.doOnLayout
 import androidx.core.view.get
 import androidx.core.view.postDelayed
 import androidx.fragment.app.Fragment
@@ -62,6 +64,7 @@ import io.legado.app.utils.clearClip
 import io.legado.app.utils.dpToPx
 import io.legado.app.utils.getClipText
 import io.legado.app.utils.isCreated
+import io.legado.app.utils.imeHeight
 import io.legado.app.utils.navigationBarHeight
 import io.legado.app.utils.observeEvent
 import io.legado.app.utils.setEdgeEffectColor
@@ -251,6 +254,18 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         bottomNavigationView.setOnApplyWindowInsetsListenerCompat { view, windowInsets ->
             val height = windowInsets.navigationBarHeight
             view.bottomPadding = height
+            view.doOnLayout {
+                val location = IntArray(2)
+                view.getLocationInWindow(location)
+                val keyboardTop = window.decorView.height - windowInsets.imeHeight
+                // The pager already ends above the bottom navigation, even when IME covers it.
+                viewPagerMain.bottomPadding = (location[1] - keyboardTop).coerceAtLeast(0)
+                if (windowInsets.imeHeight > 0) viewPagerMain.doOnLayout {
+                    currentFocus?.takeIf { it.onCheckIsTextEditor() }?.let { input ->
+                        input.requestRectangleOnScreen(Rect(0, 0, input.width, input.height), true)
+                    }
+                }
+            }
             windowInsets.inset(0, 0, 0, height)
         }
     }

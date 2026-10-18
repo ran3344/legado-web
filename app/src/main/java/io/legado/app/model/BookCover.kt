@@ -3,6 +3,7 @@ package io.legado.app.model
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import androidx.annotation.Keep
 import com.bumptech.glide.RequestBuilder
@@ -33,11 +34,19 @@ import io.legado.app.utils.BitmapUtils
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.getPrefBoolean
+import io.legado.app.utils.getPrefInt
 import io.legado.app.utils.getPrefString
 import kotlinx.coroutines.currentCoroutineContext
 import splitties.init.appCtx
 import java.io.File
 import androidx.core.graphics.drawable.toDrawable
+
+data class CoverFontSizes(
+    val titleLarge: Int,
+    val titleSmall: Int,
+    val authorLarge: Int,
+    val authorSmall: Int,
+)
 
 @Keep
 @Suppress("ConstPropertyName")
@@ -45,6 +54,7 @@ object BookCover {
 
     private const val coverRuleConfigKey = "legadoCoverRuleConfig"
     const val configFileName = "coverRule.json"
+    const val fontBackupFileName = "coverFont.ttf"
 
     var drawBookName = true
         private set
@@ -52,7 +62,16 @@ object BookCover {
         private set
     var drawBookNameHorizontal = false
         private set
+    var adaptiveTitleSize = true
+        private set
     var keepPunctuation = false
+        private set
+    @Volatile
+    var fontSizes: CoverFontSizes? = null
+        private set
+    var fontTypeface: Typeface? = null
+        private set
+    var fontCacheKey: String = ""
         private set
     lateinit var defaultDrawable: Drawable
         private set
@@ -76,7 +95,22 @@ object BookCover {
             path = appCtx.getPrefString(PreferKey.defaultCover)
         }
         drawBookNameHorizontal = appCtx.getPrefBoolean(PreferKey.coverHorizontal, false)
+        adaptiveTitleSize = appCtx.getPrefBoolean(PreferKey.coverTitleAdaptive, true)
         keepPunctuation = appCtx.getPrefBoolean(PreferKey.coverKeepPunctuation, false)
+        val fontFile = appCtx.getPrefString(PreferKey.coverFont)?.takeIf { it.isNotBlank() }?.let(::File)
+        val fontKey = fontFile?.let { "${it.path}:${it.length()}:${it.lastModified()}" }.orEmpty()
+        if (fontCacheKey != fontKey) {
+            fontTypeface = fontFile?.let { runCatching { Typeface.createFromFile(it) }.getOrNull() }
+            fontCacheKey = fontKey
+        }
+        fontSizes = if (appCtx.getPrefBoolean(PreferKey.coverCustomFontSize, false)) {
+            CoverFontSizes(
+                appCtx.getPrefInt(PreferKey.coverTitleLargeSize, 100).coerceIn(50, 200),
+                appCtx.getPrefInt(PreferKey.coverTitleSmallSize, 100).coerceIn(50, 200),
+                appCtx.getPrefInt(PreferKey.coverAuthorLargeSize, 100).coerceIn(50, 200),
+                appCtx.getPrefInt(PreferKey.coverAuthorSmallSize, 100).coerceIn(50, 200),
+            )
+        } else null
         defaultDrawable = runCatching {
             BitmapUtils.decodeBitmap(path!!, 600, 900)!!.toDrawable(appCtx.resources)
         }.getOrDefault(appCtx.resources.getDrawable(R.drawable.image_cover_default, null))

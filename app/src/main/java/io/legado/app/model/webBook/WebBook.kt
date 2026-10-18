@@ -15,6 +15,7 @@ import io.legado.app.help.book.removeAllBookType
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.http.StrResponse
 import io.legado.app.help.source.getBookType
+import io.legado.app.help.source.SuppressSourceNavigation
 import io.legado.app.model.Debug
 import io.legado.app.model.analyzeRule.AnalyzeRule
 import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
@@ -28,6 +29,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlin.coroutines.CoroutineContext
 
@@ -57,9 +59,9 @@ object WebBook {
         page: Int? = 1,
         filter: ((name: String, author: String, kind: String?) -> Boolean)? = null,
         shouldBreak: ((size: Int) -> Boolean)? = null
-    ): ArrayList<SearchBook> {
+    ): ArrayList<SearchBook> = withContext(SuppressSourceNavigation) {
         if (bookSource.isJsSource()) {
-            return JsSourceBook.searchAwait(bookSource, key, page, filter)
+            return@withContext JsSourceBook.searchAwait(bookSource, key, page, filter)
         }
         val searchUrl = bookSource.searchUrl
         if (searchUrl.isNullOrBlank()) {
@@ -101,7 +103,7 @@ object WebBook {
             }
         }
         checkRedirect(bookSource, res)
-        return BookList.analyzeBookList(
+        BookList.analyzeBookList(
             bookSource = bookSource,
             ruleData = ruleData,
             analyzeUrl = analyzeUrl,
@@ -527,6 +529,28 @@ object WebBook {
             if (!saved) throw NoStackTraceException("正文缓存已更新,请重试")
         }
         return content
+    }
+
+    /**
+     * 批量章节内容。
+     *
+     * 常规源走 contentBatch 规则,JS源走 getContentBatch 函数,
+     * 两者都通过 java.cacheContent 回存。
+     * 返回书源未回存的章节,调用方按普通单章流程兜底。
+     */
+    suspend fun getContentBatchAwait(
+        bookSource: BookSource,
+        book: Book,
+        chapters: List<BookChapter>
+    ): List<BookChapter> {
+        if (bookSource.isJsSource()) {
+            return JsSourceBook.getContentBatchAwait(bookSource, book, chapters)
+        }
+        return BookContent.analyzeContentBatch(
+            bookSource = bookSource,
+            book = book,
+            chapters = chapters
+        )
     }
 
     /**

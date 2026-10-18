@@ -10,6 +10,8 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.help.book.update
+import io.legado.app.help.book.isPdf
+import io.legado.app.help.book.isEpub
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.globalExecutor
 import io.legado.app.model.AudioPlay
@@ -61,13 +63,20 @@ class TocViewModel(application: Application) : BaseViewModel(application) {
     fun reverseToc(success: (book: Book) -> Unit) {
         execute {
             bookData.value?.apply {
-                setReverseToc(!getReverseToc())
-                val toc = appDb.bookChapterDao.getChapterList(bookUrl)
-                val newToc = toc.reversed()
-                newToc.forEachIndexed { index, bookChapter ->
-                    bookChapter.index = index
+                if (isPdf || isEpub) {
+                    setReverseToc(!getReverseToc())
+                    listOf(ReadBook.book, ReadManga.book, AudioPlay.book, VideoPlay.book)
+                        .filter { it?.bookUrl == bookUrl }
+                        .forEach { it?.setReverseToc(getReverseToc()) }
+                    appDb.bookDao.updateReverseToc(bookUrl, getReverseToc())
+                    return@apply
                 }
-                appDb.bookChapterDao.insert(*newToc.toTypedArray())
+                // Keep source parsing and index-based reading/cache identities unchanged.
+                setReverseTocDisplay(!getReverseTocDisplay())
+                listOf(ReadBook.book, ReadManga.book, AudioPlay.book, VideoPlay.book)
+                    .filter { it?.bookUrl == bookUrl }
+                    .forEach { it?.setReverseTocDisplay(getReverseTocDisplay()) }
+                appDb.bookDao.updateReverseTocDisplay(bookUrl, getReverseTocDisplay())
             }
         }.onSuccess {
             it?.let(success)

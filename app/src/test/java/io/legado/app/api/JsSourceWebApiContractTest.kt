@@ -453,6 +453,33 @@ class JsSourceWebApiContractTest {
         assertFalse(config.contains("id: 'reviewUrl'"))
     }
 
+    @Test
+    fun `batch push routes JavaScript sources through the extraction endpoint`() {
+        val toolbar = readProjectFile("modules/web/src/components/ToolBar.vue")
+        val sourceUtils = readProjectFile("modules/web/src/utils/souce.ts")
+
+        assertTrue(sourceUtils.contains("export const isJsBookSource"))
+        val splitIndex = toolbar.indexOf("const jsSources = sources.filter(isJsBookSource)")
+        val batchIndex = toolbar.indexOf("API.saveSources(declarativeSources)")
+        val singleIndex = toolbar.indexOf("API.saveJsSource(source.mainJs!, source.bookSourceUrl)")
+        assertTrue(splitIndex >= 0)
+        assertTrue(batchIndex > splitIndex)
+        assertTrue(singleIndex > batchIndex)
+        assertTrue(toolbar.contains("store.updateSource(getSourceUniqueKey(source), data.data)"))
+    }
+
+    @Test
+    fun `web debug routes JavaScript sources through the extraction endpoint`() {
+        val debug = readProjectFile("modules/web/src/components/SourceDebug.vue")
+        val jsIndex = debug.indexOf("isJsBookSource(source)")
+        val saveIndex = debug.indexOf("API.saveJsSource(source.mainJs!, source.bookSourceUrl)")
+        val debugApiIndex = debug.indexOf("await API.debug(")
+        assertTrue(jsIndex >= 0)
+        assertTrue(saveIndex > jsIndex)
+        assertTrue(debugApiIndex > saveIndex)
+        assertTrue(debug.contains("store.changeCurrentSource(data.data)"))
+    }
+
     private fun readProjectFile(path: String): String {
         val userDirectory = File(requireNotNull(System.getProperty("user.dir"))).absoluteFile
         val repositoryRoot = generateSequence(userDirectory) { it.parentFile }

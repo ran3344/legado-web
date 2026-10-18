@@ -52,19 +52,19 @@ class SearchReadRecordContractTest {
     @Test
     fun `reading a book stores the author with the record`() {
         listOf(
-            "src/main/java/io/legado/app/model/ReadBook.kt" to
-                "val author = book?.author.orEmpty()",
-            "src/main/java/io/legado/app/model/ReadManga.kt" to
-                "val author = book?.author ?: return",
-        ).forEach { (path, authorCapture) ->
+            Triple("src/main/java/io/legado/app/model/ReadBook.kt",
+                "val currentBook = book?.copy() ?: return", "getRecord(AppConst.androidId, book.name, book.author)"),
+            Triple("src/main/java/io/legado/app/model/ReadManga.kt",
+                "val currentBook = book?.copy() ?: return", "getRecord(AppConst.androidId, book.name, book.author)"),
+        ).forEach { (path, authorCapture, authorAssignment) ->
             val source = projectFile(path).readText().replace(Regex("\\s+"), " ")
             assertTrue(path, source.contains(authorCapture))
-            assertTrue(path, source.contains("readRecord.author = author"))
+            assertTrue(path, source.contains(authorAssignment))
         }
 
         val audioPlay = projectFile("src/main/java/io/legado/app/model/AudioPlay.kt")
             .readText().replace(Regex("\\s+"), " ")
-        assertTrue(audioPlay.contains("readTimeTracker.updateAuthor(book?.author.orEmpty())"))
+        assertTrue(audioPlay.contains("book?.takeUnless(readTimeTracker::isForBook)?.let { resetReadRecord(it) }"))
     }
 
     private fun projectFile(pathInApp: String): File {

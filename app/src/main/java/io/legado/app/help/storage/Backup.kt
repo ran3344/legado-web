@@ -34,8 +34,6 @@ import io.legado.app.utils.writeToOutputStream
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import splitties.init.appCtx
@@ -46,13 +44,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Callable
 import java.util.concurrent.TimeUnit
 import io.legado.app.model.VideoPlay.VIDEO_PREF_NAME
 
 internal fun selectedBackupFileNames(isEnabled: (String) -> Boolean): List<String> =
     buildList {
         if (isEnabled(BackupConfig.bookshelfContentKey)) {
-            addAll(listOf("bookshelf.json", "bookGroup.json"))
+            addAll(listOf("bookshelf.json", "bookGroup.json", "bookMemo.json"))
         }
         if (isEnabled(BackupConfig.annotationContentKey)) {
             addAll(listOf("bookmark.json", "highlight.json", "highlightRule.json"))
@@ -117,8 +116,6 @@ object Backup {
 
     private const val TAG = "Backup"
 
-    private val mutex = Mutex()
-
     private fun getNowZipFileName(): String {
         val backupDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
             .format(Date(System.currentTimeMillis()))
@@ -130,41 +127,41 @@ object Backup {
         }.normalizeFileName()
     }
 
-    private fun shouldBackup(): Boolean {
-        val lastBackup = LocalConfig.lastBackup
-        return lastBackup + TimeUnit.DAYS.toMillis(1) < System.currentTimeMillis()
+    internal fun shouldBackup(now: Long = System.currentTimeMillis()): Boolean {
+        return now - LocalConfig.lastBackup >= TimeUnit.DAYS.toMillis(AppConfig.autoBackupIntervalDays.toLong())
     }
 
     fun autoBack(context: Context) {
-        if (!AppConfig.autoBackup) return
-        if (shouldBackup()) {
-            Coroutine.async {
-                mutex.withLock {
-                    if (shouldBackup()) {
-                        val backupZipFileName = getNowZipFileName()
-                        if (!AppWebDav.hasBackUp(backupZipFileName)) {
-                            backup(context, AppConfig.backupPath)
-                        } else {
-                            LocalConfig.lastBackup = System.currentTimeMillis()
-                        }
+        if (!AppConfig.autoBackup || !shouldBackup()) return
+        Coroutine.async {
+            autoBackupLocked(context)
+        }.onError {
+            AppLog.put("自动备份失败\n${it.localizedMessage}")
+        }
+    }
+
+    internal suspend fun autoBackupLocked(context: Context) {
+        backupRestoreMutex.withLock {
+            if (AppConfig.autoBackup && shouldBackup()) {
+                withContext(IO) {
+                    check(backup(context, AppConfig.backupPath, uploadWebDav = AppConfig.autoBackupWebDav)) {
+                        "生成备份失败"
                     }
                 }
-            }.onError {
-                AppLog.put("自动备份失败\n${it.localizedMessage}")
             }
         }
     }
 
-    suspend fun backupLocked(context: Context, path: String?) {
-        mutex.withLock {
+    suspend fun backupLocked(context: Context, path: String?, uploadWebDav: Boolean = true) {
+        backupRestoreMutex.withLock {
             withContext(IO) {
-                backup(context, path)
+                check(backup(context, path, uploadWebDav = uploadWebDav)) { "生成备份失败" }
             }
         }
     }
 
     suspend fun backupForLanTransferLocked(context: Context): File {
-        return mutex.withLock {
+        return backupRestoreMutex.withLock {
             withContext(IO) {
                 val directory = File(
                     context.cacheDir,
@@ -193,7 +190,7 @@ object Backup {
     }
 
     suspend fun backupBeforeLanRestoreLocked(context: Context) {
-        mutex.withLock {
+        backupRestoreMutex.withLock {
             withContext(IO) {
                 check(
                     backup(
@@ -244,9 +241,6 @@ object Backup {
                 }
             }
         }
-        if (!lanTransfer) {
-            LocalConfig.lastBackup = System.currentTimeMillis()
-        }
         val aes = BackupAES(password)
         FileUtils.delete(backupPath)
         val backupPersistedCovers = BackupConfig.persistedCoverContentKey in enabledContentKeys
@@ -265,8 +259,11 @@ object Backup {
         } else {
             emptyList()
         }
+        val (books, memos) = appDb.runInTransaction(Callable {
+            appDb.bookDao.all to appDb.bookMemoDao.all()
+        })
         writeListToJson(
-            appDb.bookDao.all.map { book ->
+            books.map { book ->
                 book.copy(
                     persistedCoverUrl = book.persistedCoverUrl
                         .takeIf { backupPersistedCovers },
@@ -276,6 +273,7 @@ object Backup {
             "bookshelf.json",
             backupPath,
         )
+        writeListToJson(memos, "bookMemo.json", backupPath, writeEmpty = true)
         writeListToJson(appDb.bookmarkDao.all, "bookmark.json", backupPath)
         writeListToJson(appDb.bookHighlightDao.all, "highlight.json", backupPath)
         writeListToJson(
@@ -293,7 +291,12 @@ object Backup {
             "replaceRule.json",
             backupPath
         )
-        writeListToJson(appDb.readRecordDao.all, "readRecord.json", backupPath)
+        val includeReadRecordCovers = BackupConfig.readRecordCoverContentKey in enabledContentKeys &&
+            BackupConfig.historyContentKey in enabledContentKeys
+        writeListToJson(
+            prepareReadRecordBackup(appDb.readRecordDao.all, appCtx.externalFiles, File(backupPath), includeReadRecordCovers),
+            "readRecord.json", backupPath,
+        )
         writeListToJson(appDb.searchKeywordDao.all, "searchHistory.json", backupPath)
         writeListToJson(appDb.ruleSubDao.all, "sourceSub.json", backupPath)
         writeListToJson(appDb.txtTocRuleDao.all, "txtTocRule.json", backupPath)
@@ -344,8 +347,13 @@ object Backup {
                 .writeText(GSON.toJson(it))
         }
         currentCoroutineContext().ensureActive()
+        val preferenceSnapshot = HashMap<String, Any?>(appCtx.defaultSharedPreferences.all)
+        (preferenceSnapshot[PreferKey.coverFont] as? String)?.takeIf { it.isNotBlank() }?.let {
+            if (!File(it).exists()) preferenceSnapshot[PreferKey.coverFont] = ""
+        }
         writePreferenceSnapshot(appCtx, backupPath, "config") {
-            appCtx.defaultSharedPreferences.all.forEach { (key, value) ->
+            putInt("readRecordSort", LocalConfig.getInt("readRecordSort", 0))
+            preferenceSnapshot.forEach { (key, value) ->
                 if (BackupConfig.keyIsNotIgnore(key) &&
                     (!lanTransfer || key !in lanTransferIgnoredPrefKeys)
                 ) {
@@ -390,6 +398,17 @@ object Backup {
         currentCoroutineContext().ensureActive()
         val zipFileName = getNowZipFileName()
         val paths = ArrayList(selectedBackupFileNames(enabledContentKeys::contains))
+        if (BackupConfig.settingContentKey in enabledContentKeys &&
+            BackupConfig.keyIsNotIgnore(PreferKey.coverFont)
+        ) {
+            (preferenceSnapshot[PreferKey.coverFont] as? String)?.takeIf { it.isNotBlank() }?.let { fontPath ->
+                val fontBackup = File(backupPath, BookCover.fontBackupFileName)
+                val fontFile = File(fontPath)
+                check(fontFile.isFile) { "Invalid cover font: $fontPath" }
+                fontFile.copyTo(fontBackup, overwrite = true)
+                paths.add(BookCover.fontBackupFileName)
+            }
+        }
         if (lanTransfer) {
             paths.removeAll(listOf("servers.json", DirectLinkUpload.ruleFileName))
         }
@@ -407,17 +426,22 @@ object Backup {
             ).map { it.absolutePath }
         )
         FileUtils.delete(workingZipFile.absolutePath)
+        if (includeReadRecordCovers) {
+            File(backupPath, readRecordCoverDirectory).takeIf { it.isDirectory }?.let {
+                paths.add(it.absolutePath)
+            }
+        }
         FileUtils.delete(workingZipFile.absolutePath.replace("tmp_", ""))
         val backupFileName = if (AppConfig.onlyLatestBackup) {
             "backup.zip"
         } else {
             zipFileName
         }
-        val backupCreated = ZipUtils.zipFiles(paths, workingZipFile.absolutePath)
-        if (backupCreated) {
+        try {
+            if (!ZipUtils.zipFiles(paths, workingZipFile.absolutePath)) return false
             when {
                 path.isNullOrBlank() -> {
-                    copyBackup(workingZipFile, context.getExternalFilesDir(null)!!, backupFileName)
+                    copyBackup(workingZipFile, context.externalFiles, backupFileName)
                 }
 
                 path.isContentScheme() -> {
@@ -429,30 +453,20 @@ object Backup {
                 }
             }
             if (uploadWebDav) {
-                try {
-                    AppWebDav.backUpWebDav(zipFileName)
-                } catch (e: Exception) {
-                    if (currentCoroutineContext().isActive) {
-                        AppLog.put("上传备份至webdav失败\n$e", e)
-                    }
+                AppWebDav.backUpWebDav(zipFileName)
+                if (backupBackgrounds) {
+                    backgroundPaths.map {
+                        if (it.contains(File.separator)) File(it) else appCtx.externalFiles.getFile("bg", it)
+                    }.let { AppWebDav.upBgs(it.toTypedArray()) }
                 }
             }
+            currentCoroutineContext().ensureActive()
+            if (!lanTransfer) LocalConfig.lastBackup = System.currentTimeMillis()
+            return true
+        } finally {
+            FileUtils.delete(backupPath)
+            FileUtils.delete(workingZipFile.absolutePath)
         }
-        FileUtils.delete(backupPath)
-        FileUtils.delete(workingZipFile.absolutePath)
-        currentCoroutineContext().ensureActive()
-        if (backupBackgrounds && uploadWebDav) {
-            backgroundPaths.map {
-                if (it.contains(File.separator)) {
-                    File(it)
-                } else {
-                    appCtx.externalFiles.getFile("bg", it)
-                }
-            }.let {
-                AppWebDav.upBgs(it.toTypedArray())
-            }
-        }
-        return backupCreated
     }
 
     private suspend fun writeListToJson(
@@ -504,8 +518,13 @@ object Backup {
     }
 
     fun clearCache() {
-        FileUtils.delete(backupPath)
-        FileUtils.delete(zipFilePath)
-        File(appCtx.cacheDir, "lan_backup").deleteRecursively()
+        if (!backupRestoreMutex.tryLock()) return
+        try {
+            FileUtils.delete(backupPath)
+            FileUtils.delete(zipFilePath)
+            File(appCtx.cacheDir, "lan_backup").deleteRecursively()
+        } finally {
+            backupRestoreMutex.unlock()
+        }
     }
 }

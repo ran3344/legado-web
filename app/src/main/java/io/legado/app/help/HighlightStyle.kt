@@ -14,7 +14,14 @@ data class HighlightStyle(
     val box: Deco? = null,
     val emphasis: Deco? = null,
     val shadow: Shadow? = null,
-    val fontPath: String = ""
+    val fontPath: String = "",
+    val pillPaddingScale: Float? = null,
+    val fontSize: Float? = null,
+    val letterSpacing: Float? = null,
+    // Requested ink-to-edge distance in dp; null keeps the legacy shape and layout.
+    val horizontalPadding: Float? = null,
+    // Keep the optional padding out of text layout unless explicitly requested.
+    val reserveTextSpace: Boolean = false
 ) {
     data class Underline(
         val kind: Kind = Kind.SOLID,
@@ -88,22 +95,50 @@ data class HighlightStyle(
     val resolvedFontPath: String
         get() = fontPath.orEmpty()
 
+    val resolvedPillPaddingScale: Float
+        get() = pillPaddingScale?.takeIf { it.isFinite() }?.coerceIn(0.25f, 2f) ?: 1f
+
+    val resolvedFontSize: Float?
+        get() = fontSize?.takeIf { it.isFinite() }?.coerceIn(5f, 100f)
+
+    val resolvedLetterSpacing: Float?
+        get() = letterSpacing?.takeIf { it.isFinite() }?.coerceIn(-0.5f, 1f)
+
+    val resolvedHorizontalPadding: Float?
+        get() = horizontalPadding?.takeIf { it.isFinite() }?.coerceIn(0f, 64f)
+
+    // Text-only overlays must not introduce new background caps or padding boundaries.
+    fun hasSameFillGeometry(other: HighlightStyle): Boolean =
+        fill == other.fill && resolvedFillShape == other.resolvedFillShape &&
+            resolvedHorizontalPadding == other.resolvedHorizontalPadding &&
+            (resolvedFillShape != FillShape.PILL || resolvedPillPaddingScale == other.resolvedPillPaddingScale)
+
+    val changesTextMetrics: Boolean
+        get() = resolvedFontSize != null || resolvedLetterSpacing != null
+
     val isEmpty: Boolean
         get() = fill == 0 && textColor == 0 && !bold && !italic &&
             underline == null && strike == null && box == null && emphasis == null &&
-            shadow == null && resolvedFontPath.isEmpty()
+            shadow == null && resolvedFontPath.isEmpty() && !changesTextMetrics && resolvedHorizontalPadding == null
 
     val needsPerColumnDraw: Boolean
         get() = textColor != 0 || bold || italic || underline != null || strike != null ||
-            box != null || emphasis != null || shadow != null || resolvedFontPath.isNotEmpty()
+            box != null || emphasis != null || shadow != null || resolvedFontPath.isNotEmpty() || changesTextMetrics ||
+            resolvedHorizontalPadding != null
 
     fun normalized(): HighlightStyle {
         val normalizedUnderline = underline?.normalized()
         val normalizedShadow = shadow?.normalized()
-        return if (normalizedUnderline === underline && normalizedShadow === shadow) {
+        val normalizedPadding = pillPaddingScale?.let { resolvedPillPaddingScale }
+        return if (normalizedUnderline === underline && normalizedShadow === shadow &&
+            normalizedPadding == pillPaddingScale && resolvedFontSize == fontSize &&
+            resolvedLetterSpacing == letterSpacing && resolvedHorizontalPadding == horizontalPadding
+        ) {
             this
         } else {
-            copy(underline = normalizedUnderline, shadow = normalizedShadow)
+            copy(underline = normalizedUnderline, shadow = normalizedShadow,
+                pillPaddingScale = normalizedPadding, fontSize = resolvedFontSize,
+                letterSpacing = resolvedLetterSpacing, horizontalPadding = resolvedHorizontalPadding)
         }
     }
 
@@ -113,6 +148,7 @@ data class HighlightStyle(
             return current.copy(
                 fill = if (other.fill != 0) other.fill else current.fill,
                 fillShape = if (other.fill != 0) other.fillShape else current.fillShape,
+                pillPaddingScale = if (other.fill != 0) other.pillPaddingScale else current.pillPaddingScale,
                 textColor = if (other.textColor != 0) other.textColor else current.textColor,
                 bold = other.bold || current.bold,
                 italic = other.italic || current.italic,
@@ -121,7 +157,15 @@ data class HighlightStyle(
                 box = other.box ?: current.box,
                 emphasis = other.emphasis ?: current.emphasis,
                 shadow = other.shadow ?: current.shadow,
-                fontPath = other.resolvedFontPath.ifEmpty { current.resolvedFontPath }
+                fontPath = other.resolvedFontPath.ifEmpty { current.resolvedFontPath },
+                fontSize = other.resolvedFontSize ?: current.resolvedFontSize,
+                letterSpacing = other.resolvedLetterSpacing ?: current.resolvedLetterSpacing,
+                horizontalPadding = other.resolvedHorizontalPadding ?: current.resolvedHorizontalPadding,
+                reserveTextSpace = if (other.resolvedHorizontalPadding != null) {
+                    other.reserveTextSpace
+                } else {
+                    current.reserveTextSpace
+                }
             )
         }
     }

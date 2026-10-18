@@ -3,6 +3,7 @@ package io.legado.app.help.storage
 import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
 import android.net.Uri
+import android.graphics.Typeface
 import androidx.documentfile.provider.DocumentFile
 import com.google.gson.JsonElement
 import io.legado.app.BuildConfig
@@ -15,6 +16,7 @@ import io.legado.app.data.entities.AutoTaskRule
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.entities.BookHighlight
+import io.legado.app.data.entities.BookMemo
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.Bookmark
 import io.legado.app.data.entities.Cache
@@ -24,6 +26,7 @@ import io.legado.app.data.entities.HttpTTS
 import io.legado.app.data.entities.HighlightRule
 import io.legado.app.data.entities.KeyboardAssist
 import io.legado.app.data.entities.ReadRecord
+import io.legado.app.data.entities.mergeRestoredReadRecord
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.data.entities.RssSource
 import io.legado.app.data.entities.RssStar
@@ -50,6 +53,7 @@ import io.legado.app.model.VideoPlay.VIDEO_PREF_NAME
 import io.legado.app.model.BookCover
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.service.AutoTaskScheduler
+import io.legado.app.ui.font.installFontFile
 import io.legado.app.utils.ACache
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
@@ -72,7 +76,6 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import splitties.init.appCtx
@@ -142,11 +145,9 @@ internal fun parseRuntimeSourceCacheBackup(json: String): List<Cache> {
  */
 object Restore {
 
-    private val mutex = Mutex()
-
     private const val TAG = "Restore"
 
-    suspend fun restore(context: Context, uri: Uri) {
+    suspend fun restore(context: Context, uri: Uri): Unit = backupRestoreMutex.withLock {
         LogUtils.d(TAG, "开始恢复备份 uri:$uri")
         kotlin.runCatching {
             extractBackup(context, uri)
@@ -155,8 +156,7 @@ object Restore {
             return
         }
         kotlin.runCatching {
-            restoreLocked(Backup.backupPath)
-            LocalConfig.lastBackup = System.currentTimeMillis()
+            restoreUnpacked(Backup.backupPath)
         }.onFailure {
             appCtx.toastOnUi("恢复备份出错\n${it.localizedMessage}")
             AppLog.put("恢复备份出错\n${it.localizedMessage}", it)
@@ -167,7 +167,7 @@ object Restore {
         context: Context,
         uri: Uri,
         lanTransfer: Boolean = false,
-    ) {
+    ) = backupRestoreMutex.withLock {
         LogUtils.d(TAG, "开始恢复备份 uri:$uri")
         val restorePath = if (lanTransfer) {
             File(context.cacheDir, "lan_backup/restore/${UUID.randomUUID()}").absolutePath
@@ -183,8 +183,7 @@ object Restore {
                     includeBackgrounds = !BackupConfig.ignoreReadConfig,
                 )
             }
-            restoreLocked(restorePath, lanTransfer)
-            LocalConfig.lastBackup = System.currentTimeMillis()
+            restoreUnpacked(restorePath, lanTransfer)
         } finally {
             if (lanTransfer) FileUtils.delete(restorePath)
         }
@@ -206,16 +205,21 @@ object Restore {
     }
 
     suspend fun restoreLocked(path: String, lanTransfer: Boolean = false) {
-        mutex.withLock {
-            if (lanTransfer) {
-                currentCoroutineContext().ensureActive()
-                withContext(NonCancellable) {
-                    restore(path, lanTransfer = true)
-                }
-            } else {
-                restore(path)
-            }
+        backupRestoreMutex.withLock {
+            restoreUnpacked(path, lanTransfer)
         }
+    }
+
+    private suspend fun restoreUnpacked(path: String, lanTransfer: Boolean = false) {
+        if (lanTransfer) {
+            currentCoroutineContext().ensureActive()
+            withContext(NonCancellable) {
+                restore(path, lanTransfer = true)
+            }
+        } else {
+            restore(path)
+        }
+        LocalConfig.lastBackup = System.currentTimeMillis()
     }
 
     private suspend fun restore(path: String, lanTransfer: Boolean = false) {
@@ -257,6 +261,7 @@ object Restore {
             null
         }
         val restoredAutoTasks = fileToListT<AutoTaskRule>(path, "autoTask.json")
+        val restoredBookUrls = hashSetOf<String>()
         fileToListT<Book>(path, "bookshelf.json")?.let {
             it.forEach { book ->
                 if (lanTransfer) book.variable = null
@@ -279,6 +284,7 @@ object Restore {
                 if (ignoreLocalBook && book.isLocal) {
                     return@forEach
                 }
+                restoredBookUrls.add(book.bookUrl)
                 if (lanTransfer) {
                     appDb.bookDao.upsertPreservingVariable(book)
                     return@forEach
@@ -294,6 +300,9 @@ object Restore {
                 }
             }
             appDb.bookDao.insert(*newBooks.toTypedArray())
+        }
+        fileToListT<BookMemo>(path, "bookMemo.json")?.let { memos ->
+            appDb.bookMemoDao.restore(memos.filter { it.bookUrl in restoredBookUrls })
         }
         fileToListT<Bookmark>(path, "bookmark.json")?.let {
             appDb.bookmarkDao.insert(*it.toTypedArray())
@@ -362,17 +371,21 @@ object Restore {
         }
         fileToListT<ReadRecord>(path, "readRecord.json")?.let {
             it.forEach { readRecord ->
-                //判断是不是本机记录
-                if (readRecord.deviceId != androidId) {
-                    appDb.readRecordDao.insert(readRecord)
+                // Older backups omitted the device id; treat them as local records.
+                val normalizedRecord = if (readRecord.deviceId.isBlank()) {
+                    readRecord.copy(deviceId = androidId)
                 } else {
-                    val current = appDb.readRecordDao
-                        .getRecord(readRecord.deviceId, readRecord.bookName)
-                    if (current == null || current.readTime < readRecord.readTime) {
-                        appDb.readRecordDao.insert(readRecord)
-                    } else if (readRecord.author.isNotBlank()) {
-                        appDb.readRecordDao.insert(current.copy(author = readRecord.author))
-                    }
+                    readRecord
+                }
+                val restoredRecord = normalizedRecord.copy(coverUrl = remapReadRecordCover(
+                    normalizedRecord.coverUrl?.let { remapRestoredCoverPath(it, File(path), appCtx.externalFiles) },
+                    File(path), appCtx.externalFiles,
+                ))
+                appDb.runInTransaction {
+                    val current = appDb.readRecordDao.getRecord(restoredRecord.deviceId, restoredRecord.bookName, restoredRecord.author)
+                    appDb.readRecordDao.insert(mergeRestoredReadRecord(
+                        current, restoredRecord, restoredRecord.deviceId == androidId,
+                    ))
                 }
             }
         }
@@ -460,6 +473,28 @@ object Restore {
                     (!lanTransfer || key !in lanTransferIgnoredPrefKeys)
                 ) {
                     when (key) {
+                        "readRecordSort" -> (value as? Int)?.let {
+                            LocalConfig.edit().putInt(key, it.coerceIn(0, 2)).apply()
+                        }
+                        PreferKey.readRecordCover,
+                        PreferKey.readRecordCoverDark -> {
+                            val coverPath = (value as? String)?.let {
+                                remapRestoredCoverPath(it, File(path), appCtx.externalFiles)
+                            }
+                            if (coverPath == null) edit.remove(key) else edit.putString(key, coverPath)
+                        }
+                        PreferKey.coverFont -> {
+                            val fontBackup = File(path, BookCover.fontBackupFileName)
+                            val fontPath = if (value is String && value.isNotBlank() && fontBackup.isFile) {
+                                fontBackup.inputStream().use { input ->
+                                    installFontFile(input, BookCover.fontBackupFileName,
+                                        File(appCtx.externalFiles, "font")) {
+                                        runCatching { Typeface.createFromFile(it) }.isSuccess
+                                    }.absolutePath
+                                }
+                            } else (value as? String).orEmpty().takeIf { File(it).isFile }.orEmpty()
+                            edit.putString(key, fontPath)
+                        }
                         PreferKey.webDavPassword -> {
                             kotlin.runCatching {
                                 aes.decryptStr(value.toString())
@@ -512,6 +547,36 @@ object Restore {
             ) {
                 edit.putBoolean(PreferKey.showReadTitleChapterNameOnly, false)
             }
+            if (PreferKey.showExploreCategories !in map) {
+                edit.putBoolean(PreferKey.showExploreCategories, false)
+            }
+            if (BackupConfig.keyIsNotIgnore(PreferKey.coverTitleAdaptive) &&
+                PreferKey.coverTitleAdaptive !in map
+            ) {
+                edit.putBoolean(PreferKey.coverTitleAdaptive, true)
+            }
+            if (BackupConfig.keyIsNotIgnore(PreferKey.coverCustomFontSize) &&
+                PreferKey.coverCustomFontSize !in map
+            ) {
+                edit.putBoolean(PreferKey.coverCustomFontSize, false)
+            }
+            if (BackupConfig.keyIsNotIgnore(PreferKey.coverFont) && PreferKey.coverFont !in map) {
+                edit.remove(PreferKey.coverFont)
+            }
+            if (PreferKey.myMoreItems !in map) edit.remove(PreferKey.myMoreItems)
+            if (PreferKey.autoBackup !in map) edit.putBoolean(PreferKey.autoBackup, true)
+            if (PreferKey.autoBackupWebDav !in map) edit.putBoolean(PreferKey.autoBackupWebDav, true)
+            if (PreferKey.autoBackupIntervalDays !in map) edit.putInt(PreferKey.autoBackupIntervalDays, 1)
+            if ("readRecordSimpleLayout" !in map) edit.putBoolean("readRecordSimpleLayout", true)
+            if ("readRecordUseDays" !in map) edit.putBoolean("readRecordUseDays", false)
+            if ("readRecordShowSeconds" !in map) edit.putBoolean("readRecordShowSeconds", true)
+            if ("readRecordFixedCard" !in map) edit.putBoolean("readRecordFixedCard", true)
+            for (key in listOf(PreferKey.readRecordCover, PreferKey.readRecordCoverDark)) {
+                if (key !in map && BackupConfig.keyIsNotIgnore(key)) edit.remove(key)
+            }
+            if (!BackupConfig.ignoreReadConfig && PreferKey.mangaRightToLeft !in map) {
+                edit.putBoolean(PreferKey.mangaRightToLeft, false)
+            }
             edit.apply()
         }
         restoredVideoPreferences?.let { map ->
@@ -554,6 +619,7 @@ object Restore {
             null
         }
         coverRestoreResult.getOrThrow()
+        restoreBackupMediaDirectory(File(path), appCtx.externalFiles, readRecordCoverDirectory).getOrThrow()
         backgroundRestoreResult?.getOrThrow()
         if (!restoredAutoTasks.isNullOrEmpty()) {
             appDb.autoTaskRuleDao.upsert(*restoredAutoTasks.toTypedArray())

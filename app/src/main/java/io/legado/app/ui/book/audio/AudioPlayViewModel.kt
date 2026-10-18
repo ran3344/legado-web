@@ -10,8 +10,10 @@ import io.legado.app.constant.BookType
 import io.legado.app.constant.EventBus
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.replaceBookAfterSourceChange
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.saveReadRecordSnapshot
 import io.legado.app.help.book.addType
 import io.legado.app.help.book.getBookSource
 import io.legado.app.help.book.isNotShelf
@@ -171,12 +173,10 @@ class AudioPlayViewModel(application: Application) : BaseViewModel(application) 
             oldBook?.migrateTo(book, toc)
             book.removeType(BookType.updateError)
             if (wasNotShelf) book.addType(BookType.notShelf)
-            oldBook?.delete()
-            appDb.bookDao.insert(book)
+            replaceBookAfterSourceChange(oldBook, book, toc)
             AudioPlay.replaceBook(book)
             AudioPlay.inBookshelf = !wasNotShelf
             AudioPlay.setBookSource(source)
-            appDb.bookChapterDao.insert(*toc.toTypedArray())
             AudioPlay.upData(book, preserveProgress = false)
             AudioPlayService.updateNotification(context)
         }.onSuccess {
@@ -189,6 +189,7 @@ class AudioPlayViewModel(application: Application) : BaseViewModel(application) 
     fun removeFromBookshelf(success: (() -> Unit)?) {
         execute {
             AudioPlay.book?.let {
+                it.saveReadRecordSnapshot()
                 appDb.bookDao.delete(it)
             }
         }.onSuccess {
