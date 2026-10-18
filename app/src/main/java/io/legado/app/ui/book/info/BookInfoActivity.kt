@@ -1254,6 +1254,7 @@ class BookInfoActivity :
                             if (AppWebDav.defaultBookWebDav != null) {
                                 deleteRemoteCheckBox = CheckBox(this@BookInfoActivity).apply {
                                     setText(R.string.delete_webdav_book_file)
+                                    isChecked = AppConfig.webDavBookAutoDelete
                                 }
                                 addView(deleteRemoteCheckBox)
                             }
@@ -1263,6 +1264,9 @@ class BookInfoActivity :
                     yesButton {
                         if (deleteOriginalCheckBox != null) {
                             LocalConfig.deleteBookOriginal = deleteOriginalCheckBox.isChecked
+                        }
+                        if (deleteRemoteCheckBox != null) {
+                            AppConfig.webDavBookAutoDelete = deleteRemoteCheckBox.isChecked
                         }
                         deleteBook(
                             book = book,
@@ -1283,16 +1287,11 @@ class BookInfoActivity :
             finishDeleteBook(book, deleteOriginal)
             return
         }
-        val bookWebDav = AppWebDav.defaultBookWebDav
-        if (bookWebDav == null) {
-            toastOnUi(R.string.webdav_not_configured)
-            return
-        }
         lifecycleScope.launch {
             waitDialog.setText(R.string.loading)
             waitDialog.show()
             val deleted = try {
-                withContext(IO) { bookWebDav.delete(book) }
+                AppWebDav.deleteRemoteBook(book)
             } catch (e: Exception) {
                 currentCoroutineContext().ensureActive()
                 toastOnUi(e.localizedMessage ?: getString(R.string.delete_webdav_book_file_fail))
@@ -1385,9 +1384,9 @@ class BookInfoActivity :
         }
         val uploadCheckBox = CheckBox(this).apply {
             setText(R.string.upload_imported_book_to_webdav)
-            isChecked = LocalConfig.uploadImportedBookToWebDav
+            isChecked = AppConfig.webDavBookAutoUpload
             setOnCheckedChangeListener { _, isChecked ->
-                LocalConfig.uploadImportedBookToWebDav = isChecked
+                AppConfig.webDavBookAutoUpload = isChecked
             }
         }
         alert(titleResource = R.string.download_and_import_file) {

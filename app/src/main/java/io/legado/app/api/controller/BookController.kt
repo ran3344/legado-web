@@ -289,10 +289,19 @@ object BookController {
 
     /**
      * 删除书籍
+     *
+     * 网页端和手机端共用同一个书库, 删除时要一并清掉本地文件和 WebDAV 上的文件,
+     * 否则下次 WebDAV 同步会把这本"云端有本地没有"的书重新下回来
      */
-    fun deleteBook(postData: String?): ReturnData {
+    suspend fun deleteBook(postData: String?): ReturnData {
         val returnData = ReturnData()
         GSON.fromJsonObject<Book>(postData).getOrNull()?.let { book ->
+            if (book.isLocal) {
+                if (AppConfig.webDavBookAutoDelete) {
+                    AppWebDav.deleteRemoteBook(book)
+                }
+                LocalBook.deleteBook(book, true)
+            }
             book.delete()
             return returnData.setData("")
         }
@@ -348,7 +357,7 @@ object BookController {
             ?: return returnData.setErrorMsg("fileData 不能为空")
         kotlin.runCatching {
             val uri = LocalBook.saveBookFile(File(fileData).inputStream(), fileName)
-            LocalBook.importFile(uri)
+            LocalBook.importFile(uri).also { AppWebDav.autoUploadImportedBooks(listOf(it)) }
         }.onFailure {
             return when (it) {
                 is SecurityException -> returnData.setErrorMsg("需重新设置书籍保存位置!")

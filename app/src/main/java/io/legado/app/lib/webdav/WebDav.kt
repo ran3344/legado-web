@@ -355,11 +355,19 @@ open class WebDav(
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
-            AppLog.put("WebDav上传失败\n${it.localizedMessage}", it)
-            throw WebDavException(
-                "WebDav上传失败\n${it.localizedMessage}",
-                (it as? WebDavException)?.responseCode,
-            )
+            // 条件上传(If-None-Match)撞上远端已有同名文件会返回 409/412,
+            // 这是调用方预期的结果, 不该当成错误写日志、更不该把英文报错抛给用户
+            val code = (it as? WebDavException)?.responseCode
+            val conflict = !overwrite && code != null && isWebDavOverwriteConflict(code)
+            val message = if (conflict) {
+                "远端已存在同名文件"
+            } else {
+                "WebDav上传失败\n${it.localizedMessage}"
+            }
+            if (!conflict) {
+                AppLog.put(message, it)
+            }
+            throw WebDavException(message, code)
         }
     }
 
@@ -408,11 +416,19 @@ open class WebDav(
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
-            AppLog.put("WebDav上传失败\n${it.localizedMessage}", it)
-            throw WebDavException(
-                "WebDav上传失败\n${it.localizedMessage}",
-                (it as? WebDavException)?.responseCode,
-            )
+            // 条件上传(If-None-Match)撞上远端已有同名文件会返回 409/412,
+            // 这是调用方预期的结果, 不该当成错误写日志、更不该把英文报错抛给用户
+            val code = (it as? WebDavException)?.responseCode
+            val conflict = !overwrite && code != null && isWebDavOverwriteConflict(code)
+            val message = if (conflict) {
+                "远端已存在同名文件"
+            } else {
+                "WebDav上传失败\n${it.localizedMessage}"
+            }
+            if (!conflict) {
+                AppLog.put(message, it)
+            }
+            throw WebDavException(message, code)
         }
     }
 

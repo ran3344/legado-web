@@ -23,6 +23,7 @@ import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.entities.BookSource
 import io.legado.app.databinding.ActivityArrangeBookBinding
 import io.legado.app.databinding.DialogEditTextBinding
+import io.legado.app.help.AppWebDav
 import io.legado.app.help.DirectLinkUpload
 import io.legado.app.help.book.contains
 import io.legado.app.help.book.isLocal
@@ -423,14 +424,29 @@ class BookshelfManageActivity :
                 setText(R.string.delete_book_file)
                 isChecked = LocalConfig.deleteBookOriginal
             }
+            var deleteRemoteCheckBox: CheckBox? = null
+            if (AppWebDav.defaultBookWebDav != null && adapter.selection.any { it.isLocal }) {
+                deleteRemoteCheckBox = CheckBox(this@BookshelfManageActivity).apply {
+                    setText(R.string.delete_webdav_book_file)
+                    isChecked = AppConfig.webDavBookAutoDelete
+                }
+            }
             val view = LinearLayout(this@BookshelfManageActivity).apply {
                 setPadding(16.dpToPx(), 0, 16.dpToPx(), 0)
                 addView(checkBox)
+                deleteRemoteCheckBox?.let { addView(it) }
             }
             customView { view }
             okButton {
                 LocalConfig.deleteBookOriginal = checkBox.isChecked
-                viewModel.deleteBook(adapter.selection, checkBox.isChecked)
+                if (deleteRemoteCheckBox != null) {
+                    AppConfig.webDavBookAutoDelete = deleteRemoteCheckBox.isChecked
+                }
+                viewModel.deleteBook(
+                    adapter.selection,
+                    checkBox.isChecked,
+                    deleteRemoteCheckBox?.isChecked == true,
+                )
             }
             noButton()
         }
@@ -486,14 +502,22 @@ class BookshelfManageActivity :
     override fun deleteBook(book: Book) {
         alert(titleResource = R.string.draw, messageResource = R.string.sure_del) {
             var checkBox: CheckBox? = null
+            var deleteRemoteCheckBox: CheckBox? = null
             if (book.isLocal) {
                 checkBox = CheckBox(this@BookshelfManageActivity).apply {
                     setText(R.string.delete_book_file)
                     isChecked = LocalConfig.deleteBookOriginal
                 }
+                if (AppWebDav.defaultBookWebDav != null) {
+                    deleteRemoteCheckBox = CheckBox(this@BookshelfManageActivity).apply {
+                        setText(R.string.delete_webdav_book_file)
+                        isChecked = AppConfig.webDavBookAutoDelete
+                    }
+                }
                 val view = LinearLayout(this@BookshelfManageActivity).apply {
                     setPadding(16.dpToPx(), 0, 16.dpToPx(), 0)
                     addView(checkBox)
+                    deleteRemoteCheckBox?.let { addView(it) }
                 }
                 customView { view }
             }
@@ -501,7 +525,14 @@ class BookshelfManageActivity :
                 if (checkBox != null) {
                     LocalConfig.deleteBookOriginal = checkBox.isChecked
                 }
-                viewModel.deleteBook(listOf(book), LocalConfig.deleteBookOriginal)
+                if (deleteRemoteCheckBox != null) {
+                    AppConfig.webDavBookAutoDelete = deleteRemoteCheckBox.isChecked
+                }
+                viewModel.deleteBook(
+                    listOf(book),
+                    LocalConfig.deleteBookOriginal,
+                    deleteRemoteCheckBox?.isChecked == true,
+                )
             }
         }
     }

@@ -75,4 +75,9 @@ object BookType {
      */
     const val webDavTag = "webDav::"
 
+    /**
+     * 共享书库：origin 为 shared::<主设备服务地址>
+     */
+    const val sharedTag = "shared::"
+
 }

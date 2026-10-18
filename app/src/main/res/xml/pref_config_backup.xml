@@ -52,6 +52,33 @@
 
         <io.legado.app.lib.prefs.SwitchPreference
             android:defaultValue="true"
+            android:key="webDavBookAutoUpload"
+            android:summary="@string/webdav_book_auto_upload_s"
+            android:title="@string/webdav_book_auto_upload_t"
+            app:allowDividerAbove="false"
+            app:allowDividerBelow="false"
+            app:iconSpaceReserved="false" />
+
+        <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="true"
+            android:key="webDavBookAutoDelete"
+            android:summary="@string/webdav_book_auto_delete_s"
+            android:title="@string/webdav_book_auto_delete_t"
+            app:allowDividerAbove="false"
+            app:allowDividerBelow="false"
+            app:iconSpaceReserved="false" />
+
+        <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="true"
+            android:key="webDavBookAutoSync"
+            android:summary="@string/webdav_book_auto_sync_s"
+            android:title="@string/webdav_book_auto_sync_t"
+            app:allowDividerAbove="false"
+            app:allowDividerBelow="false"
+            app:iconSpaceReserved="false" />
+
+        <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="true"
             android:key="syncBookProgress"
             android:summary="@string/sync_book_progress_s"
             android:title="@string/sync_book_progress_t"

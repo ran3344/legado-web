@@ -26,6 +26,7 @@ import io.legado.app.help.book.getRemoteUrl
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isNotShelf
 import io.legado.app.help.book.isSameNameAuthor
+import io.legado.app.help.book.isShared
 import io.legado.app.help.book.isWebFile
 import io.legado.app.help.book.removeType
 import io.legado.app.help.book.savePreservingCustomCoverUrl
@@ -39,6 +40,7 @@ import io.legado.app.model.ReadBook
 import io.legado.app.model.ReadManga
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.shared.SharedLibrary
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.model.SourceCallBack
 import io.legado.app.ui.login.SourceLoginJsExtensions
@@ -579,6 +581,10 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                 inBookshelf = false
                 if (it.isLocal) {
                     LocalBook.deleteBook(it, deleteOriginal)
+                }
+                if (it.isShared) {
+                    // 共享书库：删除同步到主设备
+                    SharedLibrary.pushDeleteAsync(it)
                 }
             }
         }.onSuccess {

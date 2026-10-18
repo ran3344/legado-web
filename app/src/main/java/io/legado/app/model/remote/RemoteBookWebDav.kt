@@ -11,19 +11,127 @@ import io.legado.app.help.book.getArchiveUri
 import io.legado.app.help.book.getLocalUri
 import io.legado.app.help.book.isArchive
 import io.legado.app.help.book.update
-import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.webdav.Authorization
 import io.legado.app.lib.webdav.WebDav
 import io.legado.app.lib.webdav.WebDavFile
 import io.legado.app.model.analyzeRule.CustomUrl
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.localBook.findExactRemoteBook
+import io.legado.app.model.localBook.saveWebDavBookFile
+import io.legado.app.utils.FileDoc
+import io.legado.app.utils.exists
 import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.isContentScheme
 import kotlinx.coroutines.runBlocking
 
+/** origin 里记录远端文件名的属性名 */
+internal const val REMOTE_FILE_NAME_ATTRIBUTE = "remoteName"
+
+/** origin 里记录上次同步时远端文件大小的属性名 */
+internal const val REMOTE_FILE_SIZE_ATTRIBUTE = "remoteSize"
+
+/** origin 里记录上次同步时远端文件修改时间的属性名 */
+internal const val REMOTE_FILE_MODIFY_ATTRIBUTE = "remoteModify"
+
+/** origin 里记录上次同步时本地文件修改时间的属性名 */
+internal const val LOCAL_FILE_MODIFY_ATTRIBUTE = "localModify"
+
+/** 双向同步时一本书该做的动作 */
+internal enum class BookSyncAction { NONE, DOWNLOAD, UPLOAD }
+
+/**
+ * 本地和远端都有这本书时, 决定谁覆盖谁
+ *
+ * 同步时记下远端大小/修改时间和本地文件的修改时间, 用它们判断两边各自有没有变过;
+ * 只有一边变了就用变了的那边, 两边都变了(或还没有同步记录)则按修改时间谁新谁赢。
+ */
+internal fun decideBookSyncAction(
+    remoteSize: Long,
+    remoteModify: Long,
+    localSize: Long,
+    localModify: Long,
+    recordedRemoteSize: Long?,
+    recordedRemoteModify: Long?,
+    recordedLocalModify: Long?,
+): BookSyncAction {
+    if (recordedRemoteModify == null && recordedLocalModify == null) {
+        //还没有同步记录(老版本上传的书): 内容一样就不动, 不一样才按修改时间谁新谁赢
+        return when {
+            localSize == remoteSize -> BookSyncAction.NONE
+            localModify >= remoteModify -> BookSyncAction.UPLOAD
+            else -> BookSyncAction.DOWNLOAD
+        }
+    }
+    val remoteChanged = recordedRemoteModify != remoteModify ||
+            (recordedRemoteSize != null && recordedRemoteSize != remoteSize)
+    val localChanged = recordedLocalModify != localModify
+    return when {
+        localChanged && remoteChanged ->
+            if (localModify >= remoteModify) BookSyncAction.UPLOAD else BookSyncAction.DOWNLOAD
+
+        localChanged -> BookSyncAction.UPLOAD
+        remoteChanged -> BookSyncAction.DOWNLOAD
+        //两边都没动过但大小对不上, 本地多半是没下完的残文件
+        localSize != remoteSize -> BookSyncAction.DOWNLOAD
+        else -> BookSyncAction.NONE
+    }
+}
+
+/** origin 里记录的远端同步状态, 非 WebDAV 书籍或没记录时返回 null */
+internal fun Book.remoteSyncState(key: String): Long? {
+    if (!origin.startsWith(BookType.webDavTag)) return null
+    val attribute = CustomUrl(origin.substring(BookType.webDavTag.length)).getAttr()
+    return (attribute[key] as? String)?.toLongOrNull()
+}
+
+/** 上次同步时远端文件的大小 */
+internal fun Book.recordedRemoteSize(): Long? = remoteSyncState(REMOTE_FILE_SIZE_ATTRIBUTE)
+
+/** 上次同步时远端文件的修改时间 */
+internal fun Book.recordedRemoteModify(): Long? = remoteSyncState(REMOTE_FILE_MODIFY_ATTRIBUTE)
+
+/** 上次同步时本地文件的修改时间 */
+internal fun Book.recordedLocalModify(): Long? = remoteSyncState(LOCAL_FILE_MODIFY_ATTRIBUTE)
+
+/**
+ * 记下这次同步的远端状态, 供下次同步判断两边有没有改动
+ *
+ * [remoteName] 为 null 时保留原有的远端文件名
+ */
+internal fun Book.setRemoteSyncState(
+    remoteName: String? = null,
+    remoteSize: Long? = null,
+    remoteModify: Long? = null,
+    localModify: Long? = null,
+): Book {
+    if (!origin.startsWith(BookType.webDavTag)) return this
+    val customUrl = CustomUrl(origin.substring(BookType.webDavTag.length))
+    if (remoteName != null) {
+        customUrl.putAttribute(REMOTE_FILE_NAME_ATTRIBUTE, remoteName)
+    }
+    customUrl.putAttribute(REMOTE_FILE_SIZE_ATTRIBUTE, remoteSize?.toString())
+    customUrl.putAttribute(REMOTE_FILE_MODIFY_ATTRIBUTE, remoteModify?.toString())
+    customUrl.putAttribute(LOCAL_FILE_MODIFY_ATTRIBUTE, localModify?.toString())
+    origin = BookType.webDavTag + customUrl.toString()
+    return this
+}
+
+/**
+ * 书籍在 WebDAV 上的文件名
+ *
+ * 远端名可能超出本地文件系统上限, 落地时会被截断, 所以下载过的书把远端名记在 origin 里,
+ * 上传/删除/比对才能和远端对上。
+ */
 internal fun remoteBookUploadFileName(book: Book): String =
-    if (book.isArchive) book.archiveName else book.originName
+    book.remoteFileName()
+        ?: if (book.isArchive) book.archiveName else book.originName
+
+/** origin 中记录的远端文件名, 非 WebDAV 书籍返回 null */
+internal fun Book.remoteFileName(): String? {
+    if (!origin.startsWith(BookType.webDavTag)) return null
+    val attribute = CustomUrl(origin.substring(BookType.webDavTag.length)).getAttr()
+    return (attribute[REMOTE_FILE_NAME_ATTRIBUTE] as? String)?.takeIf { it.isNotBlank() }
+}
 
 class RemoteBookWebDav(
     val rootBookUrl: String,
@@ -65,12 +173,26 @@ class RemoteBookWebDav(
     }
 
     override suspend fun downloadRemoteBook(remoteBook: RemoteBook): Uri {
-        AppConfig.defaultBookTreeUri
-            ?: throw NoStackTraceException("没有设置书籍保存位置!")
         if (!NetworkUtils.isAvailable()) throw NoStackTraceException("网络不可用")
         val webdav = WebDav(remoteBook.path, authorization)
         return webdav.downloadInputStream().let { inputStream ->
-            LocalBook.saveBookFile(inputStream, remoteBook.filename)
+            // 落到应用私有缓存目录, 不依赖"书籍保存位置"(SAF), 免得没权限导致整本书打不开
+            saveWebDavBookFile(inputStream, remoteBook.filename)
+        }
+    }
+
+    /**
+     * 用远端内容原地覆盖 [book] 已有的文件
+     *
+     * 书架上已经有这本书时不能另存一份, 否则会出现两条同名记录。
+     * @return true 表示覆盖成功
+     */
+    suspend fun overwriteRemoteBook(remoteBook: RemoteBook, book: Book): Boolean {
+        if (!NetworkUtils.isAvailable()) throw NoStackTraceException("网络不可用")
+        val localUri = kotlin.runCatching { book.getLocalUri() }.getOrNull() ?: return false
+        if (!FileDoc.fromUri(localUri, false).exists()) return false
+        return WebDav(remoteBook.path, authorization).downloadInputStream().use { inputStream ->
+            LocalBook.overwriteLocalBookFile(book, localUri, inputStream)
         }
     }
 
@@ -98,8 +220,23 @@ class RemoteBookWebDav(
         } else {
             webDav.upload(localBookUri.path!!, overwrite = overwrite)
         }
+        val localDoc = kotlin.runCatching { FileDoc.fromUri(localBookUri, false) }.getOrNull()
+        //上传后回读远端大小/修改时间, 下次同步才能判断远端有没有变过
+        val remoteFile = kotlin.runCatching {
+            WebDav(putUrl, authorization).getWebDavFile()
+        }.getOrNull()
         book.origin = BookType.webDavTag + CustomUrl(putUrl)
             .putAttribute("serverID", serverID)
+            .putAttribute(REMOTE_FILE_NAME_ATTRIBUTE, fileName)
+            .putAttribute(
+                REMOTE_FILE_SIZE_ATTRIBUTE,
+                (remoteFile?.size ?: localDoc?.size)?.toString()
+            )
+            .putAttribute(
+                REMOTE_FILE_MODIFY_ATTRIBUTE,
+                (remoteFile?.lastModify ?: localDoc?.lastModified)?.toString()
+            )
+            .putAttribute(LOCAL_FILE_MODIFY_ATTRIBUTE, localDoc?.lastModified?.toString())
             .toString()
         book.update()
     }

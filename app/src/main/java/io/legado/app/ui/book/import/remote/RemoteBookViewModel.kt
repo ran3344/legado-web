@@ -12,8 +12,11 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.webdav.Authorization
 import io.legado.app.model.analyzeRule.CustomUrl
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.localBook.localFileState
+import io.legado.app.model.remote.REMOTE_FILE_NAME_ATTRIBUTE
 import io.legado.app.model.remote.RemoteBook
 import io.legado.app.model.remote.RemoteBookWebDav
+import io.legado.app.model.remote.setRemoteSyncState
 import io.legado.app.utils.AlphanumComparator
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers
@@ -140,7 +143,14 @@ class RemoteBookViewModel(application: Application) : BaseViewModel(application)
                 LocalBook.importFiles(downloadBookUri).forEach { book ->
                     book.origin = BookType.webDavTag + CustomUrl(remoteBook.path)
                         .putAttribute("serverID", bookWebDav.serverID)
+                        .putAttribute(REMOTE_FILE_NAME_ATTRIBUTE, remoteBook.filename)
                         .toString()
+                    book.setRemoteSyncState(
+                        remoteName = remoteBook.filename,
+                        remoteSize = remoteBook.size,
+                        remoteModify = remoteBook.lastModify,
+                        localModify = book.localFileState()?.second,
+                    )
                     book.save()
                 }
                 remoteBook.isOnBookShelf = true

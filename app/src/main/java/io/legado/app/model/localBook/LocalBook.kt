@@ -33,11 +33,13 @@ import io.legado.app.help.book.isPdf
 import io.legado.app.help.book.isUmd
 import io.legado.app.help.book.removeLocalUriCache
 import io.legado.app.help.book.simulatedTotalChapterNum
+import io.legado.app.help.book.update
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.webdav.WebDav
 import io.legado.app.lib.webdav.WebDavException
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.remote.RemoteBook
+import io.legado.app.model.remote.setRemoteSyncState
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.FileUtils
@@ -48,6 +50,8 @@ import io.legado.app.utils.externalFiles
 import io.legado.app.utils.exists
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.inputStream
+import io.legado.app.utils.outputStream
+import io.legado.app.utils.parseToUri
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.isContentScheme
 import io.legado.app.utils.isDataUrl
@@ -81,10 +85,52 @@ internal fun isMissingLocalBookFile(
     }
 }
 
+/** 本地文件系统单个文件名的字节上限(UTF-8), Android 为 255 */
+internal const val MAX_LOCAL_FILE_NAME_BYTES = 255
+
+/**
+ * 远端文件名超出本地文件系统上限时按字节截断, 保留扩展名并补一段名称哈希
+ *
+ * 同一个远端名永远映射到同一个本地名, 同步时才能靠文件名把两边对上。
+ */
+internal fun safeLocalFileName(fileName: String): String {
+    if (fileName.toByteArray(Charsets.UTF_8).size <= MAX_LOCAL_FILE_NAME_BYTES) {
+        return fileName
+    }
+    val dot = fileName.lastIndexOf('.')
+    val ext = if (dot > 0) fileName.substring(dot) else ""
+    val base = if (dot > 0) fileName.substring(0, dot) else fileName
+    val suffix = "-" + MD5Utils.md5Encode16(fileName)
+    val reservedBytes = suffix.toByteArray(Charsets.UTF_8).size +
+            ext.toByteArray(Charsets.UTF_8).size
+    val baseLimit = (MAX_LOCAL_FILE_NAME_BYTES - reservedBytes).coerceAtLeast(1)
+    return base.takeUtf8Bytes(baseLimit) + suffix + ext
+}
+
+/** 按 UTF-8 字节数截断, 不会截断代理对(emoji 等) */
+private fun String.takeUtf8Bytes(maxBytes: Int): String {
+    if (maxBytes <= 0) return ""
+    val builder = StringBuilder()
+    var used = 0
+    var index = 0
+    while (index < length) {
+        val codePoint = codePointAt(index)
+        val text = String(Character.toChars(codePoint))
+        val size = text.toByteArray(Charsets.UTF_8).size
+        if (used + size > maxBytes) break
+        used += size
+        builder.append(text)
+        index += Character.charCount(codePoint)
+    }
+    return builder.toString()
+}
+
 internal fun findExactRemoteBook(
     remoteBooks: List<RemoteBook>,
     fileName: String,
 ): RemoteBook? = remoteBooks.firstOrNull { !it.isDir && it.filename == fileName }
+    // 远端名超长时本地存的是截断名, 也要能对上
+    ?: remoteBooks.firstOrNull { !it.isDir && safeLocalFileName(it.filename) == fileName }
 
 internal fun resolveLocalBookOutputFile(root: File, relativePath: String): File {
     val canonicalRoot = root.canonicalFile
@@ -104,6 +150,38 @@ internal fun prepareLocalBookOutputFile(root: File, relativePath: String): File 
     outputFile = resolveLocalBookOutputFile(root, relativePath)
     return outputFile
 }
+
+/** WebDAV 同步书籍的本地缓存目录(应用私有, 不需要存储权限) */
+internal val webDavBookCacheDir: File
+    get() = File(appCtx.filesDir, "webdavBooks")
+
+/**
+ * 保存 WebDAV 同步下来的书籍
+ *
+ * 落到应用私有目录, 不依赖用户选择的"书籍保存位置"(SAF),
+ * 免得目录失效或没有权限时整本书都打不开。
+ */
+@Throws(SecurityException::class)
+internal fun saveWebDavBookFile(inputStream: InputStream, fileName: String): Uri {
+    //远端文件名可能超出本地文件系统上限, 落地时按字节截断
+    val localName = safeLocalFileName(fileName)
+    val file = prepareLocalBookOutputFile(webDavBookCacheDir, localName)
+    inputStream.use { input ->
+        LocalBook.withParserCacheInvalidated(Uri.fromFile(file), localName) {
+            FileOutputStream(file).use { output ->
+                input.copyTo(output)
+            }
+        }
+    }
+    return Uri.fromFile(file)
+}
+
+/** 本地书籍文件的(大小, 修改时间), 文件不在时返回 null */
+internal fun Book.localFileState(uri: Uri? = null): Pair<Long, Long>? = kotlin.runCatching {
+    val fileDoc = FileDoc.fromUri(uri ?: bookUrl.parseToUri(), false)
+    if (!fileDoc.exists()) return@runCatching null
+    fileDoc.size to fileDoc.lastModified
+}.getOrNull()
 
 /**
  * 书籍文件导入 目录正文解析
@@ -534,7 +612,10 @@ object LocalBook {
     ): Uri {
         inputStream.use {
             val defaultBookTreeUri = AppConfig.defaultBookTreeUri
-            if (defaultBookTreeUri.isNullOrBlank()) throw NoBooksDirException()
+            if (defaultBookTreeUri.isNullOrBlank()) {
+                //没设置保存位置时落到应用私有目录, 否则 WebDAV 同步和压缩包解压会整本失败
+                return saveWebDavBookFile(it, fileName)
+            }
             val treeUri = defaultBookTreeUri.toUri()
             return if (treeUri.isContentScheme()) {
                 val treeDoc = DocumentFile.fromTreeUri(appCtx, treeUri)
@@ -571,6 +652,25 @@ object LocalBook {
         }
     }
 
+    /**
+     * 用远端内容覆盖已导入书籍的文件
+     *
+     * 书架上已经有这本书时原地覆盖, 不能另存一份, 否则会出现两条同名记录。
+     */
+    internal fun overwriteLocalBookFile(book: Book, uri: Uri, inputStream: InputStream): Boolean {
+        return kotlin.runCatching {
+            withParserCacheInvalidated(book) {
+                inputStream.use { input ->
+                    uri.outputStream(appCtx).getOrThrow().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            }
+        }.onFailure {
+            AppLog.put("覆盖本地书籍<${book.name}>文件失败\n${it.localizedMessage}", it)
+        }.isSuccess
+    }
+
     fun isOnBookShelf(
         fileName: String
     ): Boolean {
@@ -602,16 +702,61 @@ object LocalBook {
         return localBook
     }
 
+    /**
+     * 记下这次下载后的同步状态, 下次同步才能判断本地和远端各自有没有改过
+     */
+    private fun recordRemoteBookSyncState(
+        localBook: Book,
+        webdav: WebDav,
+        remoteBook: RemoteBook?,
+        localUri: Uri?,
+    ) {
+        if (!localBook.origin.startsWith(BookType.webDavTag)) return
+        kotlin.runCatching {
+            val localModify = localBook.localFileState(localUri)?.second ?: return
+            val remoteSize: Long
+            val remoteModify: Long
+            val remoteName: String
+            if (remoteBook != null) {
+                remoteSize = remoteBook.size
+                remoteModify = remoteBook.lastModify
+                remoteName = remoteBook.filename
+            } else {
+                val webDavFile = runBlocking { webdav.getWebDavFile() } ?: return
+                remoteSize = webDavFile.size
+                remoteModify = webDavFile.lastModify
+                remoteName = webDavFile.displayName
+            }
+            localBook.setRemoteSyncState(
+                remoteName = remoteName,
+                remoteSize = remoteSize,
+                remoteModify = remoteModify,
+                localModify = localModify,
+            )
+            localBook.update()
+        }.onFailure {
+            AppLog.put("记录WebDAV同步状态失败<${localBook.name}>\n${it.localizedMessage}", it)
+        }
+    }
+
     // 下载 book 对应的远程文件并绑定本地路径
     internal fun downloadRemoteBook(localBook: Book): Boolean {
         val webDavUrl = localBook.getRemoteUrl()?.takeIf(String::isNotBlank)
-        if (webDavUrl == null && !AppConfig.webDavBookAutoRestore) return false
+        // 开启 WebDAV 双向同步时也允许按需补齐, 否则从备份恢复的书(只有记录没有文件)打不开
+        val useDefaultWebDav = AppConfig.webDavBookAutoRestore || AppConfig.webDavBookAutoSync
+        if (webDavUrl == null && !useDefaultWebDav) return false
+        // WebDAV 配置只在进程启动时初始化一次, 启动时没网就一直为空, 打开书时补一次
+        if (AppWebDav.authorization == null) {
+            runBlocking { AppWebDav.upConfig() }
+        }
         val defaultBookWebDav = if (webDavUrl == null) {
-            AppWebDav.defaultBookWebDav ?: return false
+            AppWebDav.defaultBookWebDav ?: run {
+                AppLog.put("打开本地书籍失败: WebDAV 未配置, 无法下载<${localBook.name}>")
+                return false
+            }
         } else null
         try {
-            AppConfig.defaultBookTreeUri
-                ?: throw NoBooksDirException()
+            var downloadedRemoteBook: RemoteBook? = null
             val webdav = webDavUrl?.let { url ->
                 // 兼容旧版链接
                 kotlin.runCatching {
@@ -629,26 +774,34 @@ object LocalBook {
                 val remoteBook = runBlocking {
                     bookWebDav.getRemoteBookList(bookWebDav.rootBookUrl)
                 }.let { findExactRemoteBook(it, fileName) } ?: return false
+                downloadedRemoteBook = remoteBook
                 WebDav(remoteBook.path, bookWebDav.authorization)
             } ?: return false
             val inputStream = runBlocking {
                 webdav.downloadInputStream()
             }
+            //落到应用私有缓存目录, 不依赖"书籍保存位置"(SAF), 免得没权限打不开
+            var savedUri: Uri? = null
             inputStream.use {
                 if (localBook.isArchive) {
-                    val archiveUri = saveBookFile(it, localBook.archiveName)
+                    val archiveUri = saveWebDavBookFile(it, localBook.archiveName)
+                    savedUri = archiveUri
                     restoreArchiveBookFile(localBook, archiveUri)
                 } else {
-                    val fileUri = saveBookFile(it, localBook.originName)
+                    val fileUri = saveWebDavBookFile(it, localBook.originName)
+                    savedUri = fileUri
                     withParserCacheInvalidated(localBook) {
                         localBook.cacheLocalUri(fileUri)
                     }
                 }
             }
+            if (!localBook.isArchive) {
+                recordRemoteBookSyncState(localBook, webdav, downloadedRemoteBook, savedUri)
+            }
             return true
         } catch (e: Exception) {
             e.printOnDebug()
-            AppLog.put("自动下载webDav书籍失败", e)
+            AppLog.put("自动下载webDav书籍<${localBook.name}>失败\n${e.localizedMessage}", e)
             return false
         }
     }

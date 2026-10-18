@@ -20,6 +20,8 @@ import io.legado.app.help.RuleBigDataHelp
 import io.legado.app.help.config.AppConfig
 import io.legado.app.model.analyzeRule.CustomUrl
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.localBook.safeLocalFileName
+import io.legado.app.model.localBook.webDavBookCacheDir
 import io.legado.app.utils.FileDoc
 import io.legado.app.utils.GSON
 import io.legado.app.utils.MD5Utils
@@ -57,6 +59,18 @@ val Book.isLocal: Boolean
 
 val Book.isLocalTxt: Boolean
     get() = isLocal && originName.endsWith(".txt", true)
+
+/**
+ * 共享书库书籍: 正文与目录来自局域网内的主设备
+ */
+val Book.isShared: Boolean
+    get() = origin.startsWith(BookType.sharedTag)
+
+/**
+ * 共享书库主设备地址, 非共享书籍返回空串
+ */
+val Book.sharedServerUrl: String
+    get() = if (isShared) origin.substring(BookType.sharedTag.length) else ""
 
 val Book.isEpub: Boolean
     get() = isLocal && originName.endsWith(".epub", true)
@@ -166,6 +180,14 @@ fun Book.getLocalUri(): Uri {
             cacheLocalUri(fileDoc.uri)
             return fileDoc.uri
         }
+    }
+
+    // WebDAV 同步下来的书缓存在应用私有目录, 换设备或清空数据后按文件名找回来
+    val cachedBookFile = File(webDavBookCacheDir, safeLocalFileName(originName))
+    if (cachedBookFile.exists()) {
+        val cachedUri = Uri.fromFile(cachedBookFile)
+        cacheLocalUri(cachedUri)
+        return cachedUri
     }
 
     cacheLocalUri(uri)

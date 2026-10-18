@@ -690,6 +690,49 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
     val webDavBookAutoRestore
         get() = appCtx.getPrefBoolean(PreferKey.webDavBookAutoRestore, false)
 
+    /**
+     * 导入本地书籍后自动上传到 WebDAV
+     */
+    var webDavBookAutoUpload: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.webDavBookAutoUpload, true)
+        set(value) = appCtx.putPrefBoolean(PreferKey.webDavBookAutoUpload, value)
+
+    /**
+     * 删除本地书籍时同步删除 WebDAV 上的文件
+     */
+    /**
+     * 删除本地书籍时是否同时删除 WebDAV 上的同名文件
+     *
+     * 默认关闭: 删除对话框里的勾选会写回这里, 开着的话"全选删除"会顺手把云端书库清空,
+     * 之后下拉刷新就再也同步不回任何书了。
+     */
+    var webDavBookAutoDelete: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.webDavBookAutoDelete, false)
+        set(value) = appCtx.putPrefBoolean(PreferKey.webDavBookAutoDelete, value)
+
+    /**
+     * 与 WebDAV 的 books 目录双向同步: 远程缺的补上, 远程删掉的本地也删掉
+     */
+    var webDavBookAutoSync: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.webDavBookAutoSync, true)
+        set(value) = appCtx.putPrefBoolean(PreferKey.webDavBookAutoSync, value)
+
+    /**
+     * 共享书库: 局域网内作为书库主设备的阅读服务地址, 例如 http://192.168.1.5:1122
+     */
+    val sharedLibraryEnabled
+        get() = appCtx.getPrefBoolean(PreferKey.sharedLibraryEnabled, false)
+
+    val sharedLibraryUrl
+        get() = appCtx.getPrefString(PreferKey.sharedLibraryUrl).orEmpty().trim().trimEnd('/')
+
+    val sharedLibraryToken
+        get() = appCtx.getPrefString(PreferKey.sharedLibraryToken).orEmpty().trim()
+
+    var sharedLibraryLastSyncTime: Long
+        get() = appCtx.getPrefLong(PreferKey.sharedLibraryLastSyncTime, 0L)
+        set(value) = appCtx.putPrefLong(PreferKey.sharedLibraryLastSyncTime, value)
+
     val recordHeapDump get() = appCtx.getPrefBoolean(PreferKey.recordHeapDump, false)
 
     val loadCoverOnlyWifi get() = appCtx.getPrefBoolean(PreferKey.loadCoverOnlyWifi, false)

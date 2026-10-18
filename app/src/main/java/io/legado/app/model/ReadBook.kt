@@ -24,6 +24,7 @@ import io.legado.app.help.book.isImage
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isPdf
 import io.legado.app.help.book.isSameNameAuthor
+import io.legado.app.help.book.isShared
 import io.legado.app.help.book.readSimulating
 import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.book.update
@@ -32,6 +33,7 @@ import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.globalExecutor
 import io.legado.app.model.localBook.TextFile
+import io.legado.app.model.shared.SharedLibrary
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.service.CacheBookService
@@ -1573,6 +1575,10 @@ object ReadBook : CoroutineScope by MainScope() {
                     }
                 }
                 book.update()
+                if (book.isShared) {
+                    // 共享书库：进度回传主设备，其它设备同步后可见
+                    SharedLibrary.pushProgressAsync(book)
+                }
             }.onFailure {
                 AppLog.put("保存书籍阅读进度信息出错\n$it", it)
             }

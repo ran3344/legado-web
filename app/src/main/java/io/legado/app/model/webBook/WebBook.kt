@@ -1,6 +1,7 @@
 package io.legado.app.model.webBook
 
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
@@ -9,6 +10,7 @@ import io.legado.app.data.entities.SearchBook
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.addType
+import io.legado.app.help.book.isShared
 import io.legado.app.help.book.removeAllBookType
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.http.StrResponse
@@ -19,6 +21,7 @@ import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.analyzeRule.RuleData
 import io.legado.app.model.jsSource.JsSourceBook
+import io.legado.app.model.shared.SharedLibrary
 import io.legado.app.ui.main.explore.ExploreAdapter.Companion.exploreInfoMapList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -202,6 +205,12 @@ object WebBook {
         book: Book,
         canReName: Boolean = true,
     ): Book {
+        if (book.isShared) {
+            // 共享书库的书籍信息以主设备为准，由同步流程写入，这里不做网络请求
+            book.removeAllBookType()
+            book.addType(BookType.text)
+            return book
+        }
         if (bookSource.isJsSource()) {
             return JsSourceBook.getBookInfoAwait(bookSource, book, canReName)
         }
@@ -298,6 +307,11 @@ object WebBook {
         runPerJs: Boolean = false,
         isFromBookInfo : Boolean = false
     ): Result<List<BookChapter>> {
+        if (book.isShared) {
+            book.removeAllBookType()
+            book.addType(BookType.text)
+            return kotlin.runCatching { SharedLibrary.getChapterList(book) }
+        }
         if (bookSource.isJsSource()) {
             return JsSourceBook.getChapterListAwait(bookSource, book)
         }
@@ -404,6 +418,15 @@ object WebBook {
         }
         if (saveToken != null && saveToken.version > 0L) {
             BookHelp.getContent(book, bookChapter, saveToken)?.let { return it }
+        }
+        if (book.isShared) {
+            // 共享书库：正文来自主设备，主设备已完成正文处理，本地只做缓存
+            val content = SharedLibrary.getContent(book, bookChapter)
+            if (saveToken != null) {
+                BookHelp.saveContent(bookSource, book, bookChapter, content, saveToken)
+                BookHelp.getContent(book, bookChapter, saveToken)?.let { return it }
+            }
+            return content
         }
         if (bookSource.isJsSource()) {
             val content = JsSourceBook.getContentAwait(

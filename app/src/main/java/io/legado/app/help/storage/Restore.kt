@@ -379,9 +379,12 @@ object Restore {
         File(path, "servers.json").takeIf {
             !lanTransfer && it.exists()
         }?.runCatching {
-            var json = readText()
-            if (!json.isJsonArray()) {
-                json = aes.decryptStr(json)
+            val raw = readText()
+            // 备份时没设置密码会写成明文, 恢复时不能无条件按密文解
+            val json = if (raw.isJsonArray()) {
+                raw
+            } else {
+                kotlin.runCatching { aes.decryptStr(raw) }.getOrNull() ?: raw
             }
             GSON.fromJsonArray<Server>(json).getOrNull()?.let {
                 appDb.serverDao.insert(*it.toTypedArray())

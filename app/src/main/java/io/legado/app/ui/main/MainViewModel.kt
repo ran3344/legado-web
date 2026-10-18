@@ -136,6 +136,50 @@ class MainViewModel(application: Application) : BaseViewModel(application) {
         }
     }
 
+    /**
+     * 下拉刷新时顺带同步一次 WebDAV 书库
+     *
+     * 以前只回调"有没有同步", 现在把具体原因告诉用户, 否则下拉之后毫无反应, 不知道是没配置、
+     * 开关没开还是地址指到了空目录
+     *
+     * @param onFinished 同步结束后回调(主线程), 调用方用它收掉下拉刷新指示器
+     */
+    fun syncWebDavBooks(onFinished: () -> Unit = {}) {
+        AppWebDav.syncLocalBooksManually { result ->
+            when (result) {
+                AppWebDav.SyncResult.SUCCESS -> {
+                    val failed = AppWebDav.lastSyncFailedCount
+                    if (failed > 0) {
+                        context.toastOnUi(
+                            context.getString(R.string.webdav_book_sync_partial, failed)
+                        )
+                    } else if (AppWebDav.lastRemoteBookCount == 0) {
+                        // 云端 books 目录是空的: 要么地址/子目录配错, 要么云端文件被删过
+                        context.toastOnUi(R.string.webdav_book_sync_empty_remote)
+                    } else {
+                        context.toastOnUi(
+                            context.getString(
+                                R.string.webdav_book_sync_done_count,
+                                AppWebDav.lastRemoteBookCount
+                            )
+                        )
+                    }
+                }
+                AppWebDav.SyncResult.DISABLED ->
+                    context.toastOnUi(R.string.webdav_book_sync_disabled)
+                AppWebDav.SyncResult.NOT_CONFIGURED ->
+                    context.toastOnUi(R.string.webdav_book_sync_not_configured)
+                AppWebDav.SyncResult.OFFLINE ->
+                    context.toastOnUi(R.string.webdav_book_sync_offline)
+                AppWebDav.SyncResult.BUSY ->
+                    context.toastOnUi(R.string.webdav_book_sync_busy)
+                AppWebDav.SyncResult.FAILED ->
+                    context.toastOnUi(R.string.webdav_book_sync_failed)
+            }
+            onFinished()
+        }
+    }
+
     @Synchronized
     private fun addToWaitUp(
         books: List<Book>,

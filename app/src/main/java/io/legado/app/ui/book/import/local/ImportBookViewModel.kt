@@ -11,6 +11,7 @@ import io.legado.app.constant.PreferKey
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.exception.NoStackTraceException
+import io.legado.app.help.AppWebDav
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.utils.AlphanumComparator
 import io.legado.app.utils.FileDoc
@@ -112,6 +113,8 @@ class ImportBookViewModel(application: Application) : BaseViewModel(application)
                 throw NoStackTraceException(context.getString(R.string.book_group_limit))
             }
             val (importedUris, importedBooks) = LocalBook.importFiles(fileUris)
+            //导入后按配置自动同步到 WebDAV
+            AppWebDav.autoUploadImportedBooks(importedBooks)
             val groupError = groupName?.let { name ->
                 kotlin.runCatching {
                     appDb.runInTransaction {

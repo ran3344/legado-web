@@ -3,6 +3,7 @@ package io.legado.app.model.remote
 import androidx.annotation.Keep
 import io.legado.app.lib.webdav.WebDavFile
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.localBook.safeLocalFileName
 
 @Keep
 data class RemoteBook(
@@ -24,7 +25,9 @@ data class RemoteBook(
     ) {
         if (!webDavFile.isDir) {
             contentType = webDavFile.displayName.substringAfterLast(".")
-            isOnBookShelf = LocalBook.isOnBookShelf(webDavFile.displayName)
+            isOnBookShelf = LocalBook.isOnBookShelf(
+                safeLocalFileName(webDavFile.displayName)
+            )
         }
     }
 

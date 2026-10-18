@@ -133,6 +133,9 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE name = :name and origin = :origin")
     fun getBookByOrigin(name: String, origin: String): Book?
 
+    @Query("SELECT * FROM books WHERE origin = :origin")
+    fun getBooksByOrigin(origin: String): List<Book>
+
     @get:Query("select count(bookUrl) from books where (SELECT sum(groupId) FROM book_groups)")
     val noGroupSize: Int
 

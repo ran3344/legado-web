@@ -53,6 +53,7 @@ import io.legado.app.help.storage.Backup
 import io.legado.app.lib.theme.WallpaperTheme
 import io.legado.app.model.BookCover
 import io.legado.app.model.AutoTask
+import io.legado.app.model.shared.SharedLibrary
 import io.legado.app.service.AutoTaskScheduler
 import io.legado.app.utils.ChineseUtils
 import io.legado.app.utils.LogUtils
@@ -132,6 +133,12 @@ class App : Application() {
             //同步阅读记录
             if (AppConfig.syncBookProgress) {
                 AppWebDav.downloadAllBookProgress()
+            }
+            //同步 WebDAV 书库(云端有本地没有的补下来, 本地删掉的同步删掉)
+            AppWebDav.syncLocalBooksAsync()
+            //同步共享书库书架
+            if (SharedLibrary.isEnabled) {
+                SharedLibrary.syncLibraryAsync()
             }
         }
     }

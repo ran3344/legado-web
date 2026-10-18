@@ -8,6 +8,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.AppPattern.bookFileRegex
 import io.legado.app.data.entities.Book
+import io.legado.app.help.AppWebDav
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.utils.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -107,6 +108,7 @@ class FileAssociationViewModel(application: Application) : BaseAssociationViewMo
 
     fun importBook(uri: Uri) {
         val book = LocalBook.importFile(uri)
+        AppWebDav.autoUploadImportedBooks(listOf(book))
         openBookLiveData.postValue(book)
     }
 

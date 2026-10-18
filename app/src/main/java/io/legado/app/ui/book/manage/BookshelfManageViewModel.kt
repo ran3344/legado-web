@@ -11,9 +11,11 @@ import io.legado.app.constant.BookType
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
+import io.legado.app.help.AppWebDav
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.installPersistentCover
 import io.legado.app.help.book.isLocal
+import io.legado.app.help.book.isShared
 import io.legado.app.help.book.networkCoverForPersistence
 import io.legado.app.help.book.networkCoverSourceOrigin
 import io.legado.app.help.book.removeType
@@ -22,6 +24,7 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.glide.ImageLoader
 import io.legado.app.help.glide.OkHttpModelLoader
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.shared.SharedLibrary
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.model.SourceCallBack
 import io.legado.app.utils.FileUtils
@@ -92,15 +95,30 @@ class BookshelfManageViewModel(application: Application) : BaseViewModel(applica
         }
     }
 
-    fun deleteBook(books: List<Book>, deleteOriginal: Boolean = false) {
+    fun deleteBook(
+        books: List<Book>,
+        deleteOriginal: Boolean = false,
+        deleteRemote: Boolean = false,
+    ) {
         execute {
             appDb.bookDao.delete(*books.toTypedArray())
             books.forEach {
                 if (it.isLocal) {
+                    if (deleteRemote) {
+                        kotlin.runCatching { AppWebDav.deleteRemoteBook(it) }
+                            .onFailure { e ->
+                                currentCoroutineContext().ensureActive()
+                                AppLog.put("删除WebDAV书籍<${it.name}>失败\n${e.localizedMessage}", e)
+                            }
+                    }
                     LocalBook.deleteBook(it, deleteOriginal)
                 } else {
                     val source = appDb.bookSourceDao.getBookSource(it.origin)
                     SourceCallBack.callBackBook(SourceCallBack.DEL_BOOK_SHELF, source, it)
+                }
+                if (it.isShared) {
+                    // 共享书库：删除同步到主设备
+                    SharedLibrary.pushDeleteAsync(it)
                 }
             }
         }

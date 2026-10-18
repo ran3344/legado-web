@@ -3,36 +3,63 @@ package io.legado.app.help
 import android.net.Uri
 import io.legado.app.R
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.BookType
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookProgress
 import io.legado.app.exception.NoStackTraceException
+import io.legado.app.help.book.isArchive
+import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.update
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.storage.Backup
 import io.legado.app.help.storage.Restore
 import io.legado.app.lib.webdav.Authorization
 import io.legado.app.lib.webdav.WebDav
 import io.legado.app.lib.webdav.WebDavException
 import io.legado.app.lib.webdav.WebDavFile
+import io.legado.app.lib.webdav.isWebDavNotFound
+import io.legado.app.lib.webdav.isWebDavOverwriteConflict
+import io.legado.app.model.analyzeRule.CustomUrl
+import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.localBook.findExactRemoteBook
+import io.legado.app.model.localBook.localFileState
+import io.legado.app.model.localBook.safeLocalFileName
+import io.legado.app.model.remote.RemoteBook
+import io.legado.app.model.remote.BookSyncAction
+import io.legado.app.model.remote.REMOTE_FILE_NAME_ATTRIBUTE
 import io.legado.app.model.remote.RemoteBookWebDav
+import io.legado.app.model.remote.decideBookSyncAction
+import io.legado.app.model.remote.recordedLocalModify
+import io.legado.app.model.remote.recordedRemoteModify
+import io.legado.app.model.remote.recordedRemoteSize
+import io.legado.app.model.remote.setRemoteSyncState
+import io.legado.app.model.remote.remoteBookUploadFileName
 import io.legado.app.utils.AlphanumComparator
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
 import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.UrlUtil
 import io.legado.app.utils.compress.ZipUtils
+import io.legado.app.utils.exists
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.getPrefString
+import io.legado.app.utils.getPrefStringSet
 import io.legado.app.utils.isJson
 import io.legado.app.utils.normalizeFileName
+import io.legado.app.utils.putPrefStringSet
 import io.legado.app.utils.removePref
 import io.legado.app.utils.runCatchingCancellable
 import io.legado.app.utils.toastOnUi
+import kotlinx.coroutines.Dispatchers.IO
+import kotlinx.coroutines.Dispatchers.Main
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 import splitties.init.appCtx
 import java.io.File
 
@@ -41,6 +68,22 @@ import java.io.File
  */
 object AppWebDav {
     private const val defaultWebDavUrl = "https://dav.jianguoyun.com/dav/"
+
+    /**
+     * 单次列目录有条目上限(坚果云等), 达到该数量时只补齐, 不判定"远程已删除"
+     */
+    private const val REMOTE_LIST_TRUNCATE_THRESHOLD = 700
+
+    /**
+     * 一次书库同步的结果, 用于给下拉刷新等手动入口提示具体原因
+     *
+     * 以前只返回 Boolean, 分不清"没配置/开关关了/没网/正在同步中", 出问题时界面上毫无反应
+     */
+    enum class SyncResult {
+        SUCCESS, NOT_CONFIGURED, DISABLED, OFFLINE, BUSY, FAILED
+    }
+
+    private val syncLock = Mutex()
     private val bookProgressUrl get() = "${rootWebDavUrl}bookProgress/"
     private val exportsWebDavUrl get() = "${rootWebDavUrl}books/"
     private val bgWebDavUrl get() = "${rootWebDavUrl}background/"
@@ -49,6 +92,31 @@ object AppWebDav {
         private set
 
     var defaultBookWebDav: RemoteBookWebDav? = null
+
+    /**
+     * 最近一次同步的结果, 供手动同步入口提示原因
+     */
+    @Volatile
+    var lastSyncResult: SyncResult = SyncResult.FAILED
+        private set
+
+    /**
+     * 最近一次同步时云端 books 目录里的文件数
+     *
+     * 用于识别"WebDAV 地址/子目录配错, 指到了空的目录"这种情况
+     */
+    @Volatile
+    var lastRemoteBookCount: Int = 0
+        private set
+
+    /**
+     * 最近一次同步里下载失败的书籍数
+     *
+     * 以前单本下载失败只写日志, 外面依然提示"同步完成", 用户看到书架有书却打不开
+     */
+    @Volatile
+    var lastSyncFailedCount: Int = 0
+        private set
 
     val isOk get() = authorization != null
 
@@ -300,7 +368,10 @@ object AppWebDav {
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
-            AppLog.put("获取书籍进度失败\n${it.localizedMessage}", it)
+            //云端还没有这本书的进度文件是正常情况(新导入的书都是这样), 不该当成错误
+            if (!isWebDavNotFound(it)) {
+                AppLog.put("获取书籍进度失败\n${it.localizedMessage}", it)
+            }
         }
         return null
     }
@@ -333,6 +404,442 @@ object AppWebDav {
                     book.update()
                 }
             }
+        }
+    }
+
+    /**
+     * 导入本地书籍后按配置自动上传到 WebDAV
+     * 开关: [AppConfig.webDavBookAutoUpload], 不阻塞导入流程
+     */
+    fun autoUploadImportedBooks(books: Collection<Book>) {
+        if (!AppConfig.webDavBookAutoUpload) return
+        if (books.isEmpty()) return
+        if (defaultBookWebDav == null) return
+        Coroutine.async {
+            ensureConfigured()
+            val bookWebDav = defaultBookWebDav ?: return@async
+            val localBooks = books.filter { it.isLocal }
+            if (localBooks.isEmpty()) return@async
+            // 先把云端目录列一次: 云端已有同一本书时不能再走条件上传, 那样必然 412
+            val remoteBooks = kotlin.runCatching {
+                withContext(IO) { bookWebDav.getRemoteBookList(bookWebDav.rootBookUrl) }
+            }.getOrNull()
+            localBooks.forEach { autoUploadImportedBook(bookWebDav, it, remoteBooks) }
+        }
+    }
+
+    private suspend fun autoUploadImportedBook(
+        bookWebDav: RemoteBookWebDav,
+        book: Book,
+        remoteBooks: List<RemoteBook>?,
+    ) {
+        if (!NetworkUtils.isAvailable()) return
+        val fileName = remoteBookUploadFileName(book)
+        val remoteBook = remoteBooks?.let { findExactRemoteBook(it, fileName) }
+        if (remoteBook != null) {
+            //云端已有同一本书: 绑定过去并按修改时间谁新谁赢, 而不是当成上传失败
+            bindRemoteBook(bookWebDav, book, remoteBook)
+            removePendingDelete(fileName)
+            return
+        }
+        // 已经列过目录、确认云端没有同名文件时直接用覆盖上传:
+        // 有的服务端对不存在的文件也会因为 If-None-Match: * 回 412(局域网共享那套就是这样),
+        // 只肯走条件上传的话新书永远传不上去
+        val overwrite = remoteBooks != null
+        kotlin.runCatching {
+            withContext(IO) { bookWebDav.upload(book, overwrite = overwrite) }
+        }.onSuccess {
+            //重新导入的同名书籍不该再被待删队列删掉
+            removePendingDelete(fileName)
+        }.onFailure {
+            currentCoroutineContext().ensureActive()
+            if (it is WebDavException && isWebDavOverwriteConflict(it.responseCode)) {
+                //远程已存在同名文件,不覆盖
+                return@onFailure
+            }
+            AppLog.put("自动上传书籍<${book.name}>到WebDAV失败\n${it.localizedMessage}", it)
+        }
+    }
+
+    /**
+     * 把本地书绑定到云端同名文件, 并按修改时间谁新谁赢决定要不要覆盖云端
+     */
+    private suspend fun bindRemoteBook(
+        bookWebDav: RemoteBookWebDav,
+        book: Book,
+        remoteBook: RemoteBook,
+    ) {
+        //要先判定再写同步状态, 否则刚写下的状态会让这次比较变成"没有变化"
+        val action = if (book.isArchive) BookSyncAction.NONE else book.syncAction(remoteBook)
+        book.origin = BookType.webDavTag + CustomUrl(remoteBook.path)
+            .putAttribute("serverID", bookWebDav.serverID)
+            .putAttribute(REMOTE_FILE_NAME_ATTRIBUTE, remoteBook.filename)
+            .toString()
+        book.setRemoteSyncState(
+            remoteName = remoteBook.filename,
+            remoteSize = remoteBook.size,
+            remoteModify = remoteBook.lastModify,
+            localModify = book.localFileState()?.second,
+        )
+        book.update()
+        if (action == BookSyncAction.UPLOAD) {
+            withContext(IO) { bookWebDav.upload(book, overwrite = true) }
+        }
+    }
+
+    /**
+     * 删除 WebDAV 上与 [book] 对应的文件
+     *
+     * 删除失败(离线或远程报错)时把文件名记入待删队列, 下次同步补做,
+     * 否则这本书会被 [syncLocalBooks] 当成"云端有本地没有"重新下回来。
+     * @return true 表示删除已完成或已排入待删队列
+     */
+    suspend fun deleteRemoteBook(book: Book): Boolean {
+        if (!book.isLocal) return true
+        val bookWebDav = defaultBookWebDav ?: return true
+        val fileName = remoteBookUploadFileName(book)
+        if (!NetworkUtils.isAvailable()) {
+            enqueuePendingDelete(fileName)
+            return true
+        }
+        val deleted = withContext(IO) {
+            kotlin.runCatching {
+                bookWebDav.delete(book)
+            }.onFailure {
+                currentCoroutineContext().ensureActive()
+                AppLog.put("删除WebDAV书籍<${book.name}>失败\n${it.localizedMessage}", it)
+            }.getOrDefault(false)
+        }
+        if (deleted) {
+            removePendingDelete(fileName)
+        } else {
+            enqueuePendingDelete(fileName)
+        }
+        return true
+    }
+
+    /**
+     * 本地书库与 WebDAV books 目录双向同步
+     * - 云端有本地没有 -> 下载入库并绑定 webDav 来源
+     * - 本地新导入未上传 -> 上传(不覆盖远程同名文件)
+     * - 云端已删除且本地来源为 webDav -> 删除本地记录与文件
+     * - 待删队列补做
+     *
+     * @return true 表示本轮同步已执行
+     */
+    suspend fun syncLocalBooks(): Boolean {
+        if (!AppConfig.webDavBookAutoSync) {
+            lastSyncResult = SyncResult.DISABLED
+            return false
+        }
+        val bookWebDav = defaultBookWebDav ?: run {
+            lastSyncResult = SyncResult.NOT_CONFIGURED
+            return false
+        }
+        if (!NetworkUtils.isAvailable()) {
+            lastSyncResult = SyncResult.OFFLINE
+            return false
+        }
+        if (!syncLock.tryLock()) {
+            lastSyncResult = SyncResult.BUSY
+            return false
+        }
+        try {
+            return withContext(IO) {
+                val remoteBooks = bookWebDav.getRemoteBookList(bookWebDav.rootBookUrl)
+                    .filter { !it.isDir }
+                lastRemoteBookCount = remoteBooks.size
+                lastSyncFailedCount = 0
+                // 单次列目录有条目上限, 接近上限时只补齐, 不判定"远程已删除"
+                val remoteTruncated = remoteBooks.size >= REMOTE_LIST_TRUNCATE_THRESHOLD
+                val remoteBookMap = remoteBooks.associateByTo(mutableMapOf()) { it.filename }
+                val pendingDeletes =
+                    flushPendingDeletes(bookWebDav, remoteBookMap, remoteTruncated)
+                // 远端名超长时本地存的是截断名, 用截断名建一份索引供上传/删除比对
+                val remoteLocalNames = remoteBookMap.keys
+                    .mapTo(hashSetOf()) { safeLocalFileName(it) }
+                val localBooks = appDb.bookDao.all.filter { it.isLocal }
+                // 书库里有记录不代表文件还在(从备份恢复的书库只有记录没有文件), 需要按文件名分组后核对文件
+                val localBookMap = localBooks
+                    .mapNotNull { book -> book.syncFileName()?.let { it to book } }
+                    .groupBy({ it.first }, { it.second })
+                // 1. 云端有本地没有 -> 下载; 两边都有 -> 按修改时间谁新谁赢
+                remoteBookMap.values.forEach { remoteBook ->
+                    if (remoteBook.filename in pendingDeletes) return@forEach
+                    // 远端名超长时本地存的是截断名, 两种键都查一遍
+                    val matchedBooks = localBookMap[remoteBook.filename]
+                        ?: localBookMap[safeLocalFileName(remoteBook.filename)]
+                    val localBook = matchedBooks?.firstOrNull { it.localFileExists() }
+                    if (localBook != null) {
+                        // 压缩包书籍本地存的是解压出来的章节, 大小/时间对不上, 不做自动覆盖
+                        val action = if (localBook.isArchive) {
+                            BookSyncAction.NONE
+                        } else {
+                            localBook.syncAction(remoteBook)
+                        }
+                        when (action) {
+                            BookSyncAction.NONE -> return@forEach
+                            BookSyncAction.DOWNLOAD -> Unit
+                            BookSyncAction.UPLOAD -> {
+                                kotlin.runCatching {
+                                    bookWebDav.upload(localBook, overwrite = true)
+                                }.onFailure {
+                                    currentCoroutineContext().ensureActive()
+                                    lastSyncFailedCount++
+                                    AppLog.put(
+                                        "自动上传书籍<${localBook.name}>到WebDAV失败\n${it.localizedMessage}",
+                                        it
+                                    )
+                                }
+                                return@forEach
+                            }
+                        }
+                    }
+                    kotlin.runCatching {
+                        downloadRemoteBookToShelf(bookWebDav, remoteBook, localBook)
+                    }.onSuccess {
+                        // 同名但路径已失效的旧记录要清掉, 否则书架出现重复条目并反复重新下载
+                        matchedBooks?.filterNot { it.localFileExists() }
+                            ?.forEach { removeStaleLocalBookRecord(it) }
+                    }.onFailure {
+                        currentCoroutineContext().ensureActive()
+                        lastSyncFailedCount++
+                        AppLog.put(
+                            "自动下载WebDAV书籍<${remoteBook.filename}>失败\n${it.localizedMessage}",
+                            it
+                        )
+                    }
+                }
+                // 2. 本地有云端没有 -> 上传
+                // 列目录被截断时无法确定云端真的没有, 只在这种情况下才用条件上传
+                val uploadOverwrite = !remoteTruncated
+                localBooks.forEach { book ->
+                    val fileName = book.syncFileName() ?: return@forEach
+                    if (book.origin != BookType.localTag) return@forEach
+                    if (fileName in remoteBookMap || fileName in remoteLocalNames) return@forEach
+                    kotlin.runCatching {
+                        bookWebDav.upload(book, overwrite = uploadOverwrite)
+                    }.onSuccess {
+                        //重新导入的同名书籍不该再被待删队列删掉
+                        removePendingDelete(fileName)
+                    }.onFailure {
+                        currentCoroutineContext().ensureActive()
+                        if (it is WebDavException && isWebDavOverwriteConflict(it.responseCode)) {
+                            return@onFailure
+                        }
+                        AppLog.put("自动上传书籍<${book.name}>到WebDAV失败\n${it.localizedMessage}", it)
+                    }
+                }
+                // 3. 云端已删除 -> 删除本地
+                if (!remoteTruncated && remoteBooks.isNotEmpty()) {
+                    localBooks.forEach { book ->
+                        if (!book.origin.startsWith(BookType.webDavTag)) return@forEach
+                        val fileName = book.syncFileName() ?: return@forEach
+                        if (fileName in remoteBookMap || fileName in remoteLocalNames) {
+                            return@forEach
+                        }
+                        removeLocalBook(book)
+                    }
+                }
+                lastSyncResult = SyncResult.SUCCESS
+                true
+            }
+        } finally {
+            syncLock.unlock()
+        }
+    }
+
+    /**
+     * 异步执行双向同步, 不阻塞调用方
+     */
+    fun syncLocalBooksAsync() {
+        if (!AppConfig.webDavBookAutoSync) return
+        Coroutine.async {
+            kotlin.runCatching {
+                ensureConfigured()
+                syncLocalBooks()
+            }.onFailure {
+                lastSyncResult = SyncResult.FAILED
+                AppLog.put("自动同步WebDAV书库失败\n${it.localizedMessage}", it)
+            }
+        }
+    }
+
+    /**
+     * 配置只在进程启动时初始化一次, 那时没网就会一直是 null, 之后再也不重试
+     *
+     * 同步前补一次, 否则用户"退出重进"也永远同步不了
+     */
+    private suspend fun ensureConfigured() {
+        if (defaultBookWebDav != null) return
+        upConfig()
+    }
+
+    /**
+     * 手动触发一次书库同步(下拉刷新等入口), 完成后回调具体结果
+     */
+    fun syncLocalBooksManually(onFinished: (SyncResult) -> Unit) {
+        Coroutine.async {
+            val synced = kotlin.runCatching {
+                ensureConfigured()
+                syncLocalBooks()
+            }.onFailure {
+                lastSyncResult = SyncResult.FAILED
+                AppLog.put("手动同步WebDAV书库失败\n${it.localizedMessage}", it)
+            }.getOrDefault(false)
+            val result = if (synced) SyncResult.SUCCESS else lastSyncResult
+            withContext(Main) {
+                onFinished(result)
+            }
+        }
+    }
+
+    private fun Book.syncFileName(): String? =
+        remoteBookUploadFileName(this).takeIf { it.isNotBlank() }
+
+    /**
+     * 书库记录对应的文件是否真的还在
+     *
+     * 从备份恢复的书库只有记录没有文件, 只看记录会把这批书当成"本地已有"而跳过下载,
+     * 结果书架上能看到书却打不开。
+     */
+    private fun Book.localFileExists(): Boolean = localFileState() != null
+
+    /**
+     * 本地和远端都有这本书时该做什么: 只有一边变了用变的那边, 两边都变了按修改时间谁新谁赢
+     */
+    private fun Book.syncAction(remoteBook: RemoteBook): BookSyncAction {
+        val localState = localFileState() ?: return BookSyncAction.DOWNLOAD
+        return decideBookSyncAction(
+            remoteSize = remoteBook.size,
+            remoteModify = remoteBook.lastModify,
+            localSize = localState.first,
+            localModify = localState.second,
+            recordedRemoteSize = recordedRemoteSize(),
+            recordedRemoteModify = recordedRemoteModify(),
+            recordedLocalModify = recordedLocalModify(),
+        )
+    }
+
+    private suspend fun downloadRemoteBookToShelf(
+        bookWebDav: RemoteBookWebDav,
+        remoteBook: RemoteBook,
+        existing: Book?,
+    ) {
+        // 书架上已经有这本书时原地覆盖, 另存一份会多出一条同名记录
+        if (existing != null && bookWebDav.overwriteRemoteBook(remoteBook, existing)) {
+            resetLocalBookAfterOverwrite(existing)
+            existing.setRemoteSyncState(
+                remoteName = remoteBook.filename,
+                remoteSize = remoteBook.size,
+                remoteModify = remoteBook.lastModify,
+                localModify = existing.localFileState()?.second,
+            )
+            existing.update()
+            return
+        }
+        val uri = bookWebDav.downloadRemoteBook(remoteBook)
+        LocalBook.importFiles(uri).forEach { book ->
+            book.origin = BookType.webDavTag + CustomUrl(remoteBook.path)
+                .putAttribute("serverID", bookWebDav.serverID)
+                .putAttribute(REMOTE_FILE_NAME_ATTRIBUTE, remoteBook.filename)
+                .toString()
+            book.setRemoteSyncState(
+                remoteName = remoteBook.filename,
+                remoteSize = remoteBook.size,
+                remoteModify = remoteBook.lastModify,
+                localModify = book.localFileState()?.second,
+            )
+            book.update()
+        }
+    }
+
+    /**
+     * 覆盖文件后清掉解析缓存, 让目录和正文按新内容重新解析
+     */
+    private fun resetLocalBookAfterOverwrite(book: Book) {
+        LocalBook.withParserCacheInvalidated(book) {
+            LocalBook.deleteBook(book, false)
+            book.latestChapterTime = 0
+            appDb.bookChapterDao.delByBook(book.bookUrl)
+        }
+    }
+
+    private fun removeLocalBook(book: Book) {
+        LocalBook.deleteBook(book, true)
+        book.delete()
+    }
+
+    /**
+     * 清掉同名的失效记录, 文件本身已经不在了所以不删文件
+     */
+    private fun removeStaleLocalBookRecord(book: Book) {
+        LocalBook.deleteBook(book, false)
+        book.delete()
+    }
+
+    /**
+     * 补做待删队列, 成功删除的从队列出队并从 [remoteBookMap] 移除, 避免同轮被重新下回来
+     */
+    private suspend fun flushPendingDeletes(
+        bookWebDav: RemoteBookWebDav,
+        remoteBookMap: MutableMap<String, RemoteBook>,
+        remoteTruncated: Boolean,
+    ): Set<String> {
+        val pending = appCtx.getPrefStringSet(PreferKey.webDavBookPendingDeletes)
+            ?.toMutableSet() ?: return emptySet()
+        if (pending.isEmpty()) return emptySet()
+        val remaining = mutableSetOf<String>()
+        pending.forEach { fileName ->
+            // 待删队列里存的可能是本地截断名, 按截断名再找一遍
+            val remoteBook = remoteBookMap[fileName]
+                ?: remoteBookMap.values.firstOrNull { safeLocalFileName(it.filename) == fileName }
+            if (remoteBook == null) {
+                // 列目录被截断时无法断定远程已删除, 保留待删记录
+                if (remoteTruncated) remaining.add(fileName)
+                return@forEach
+            }
+            val deleted = kotlin.runCatching {
+                WebDav(remoteBook.path, bookWebDav.authorization).delete()
+            }.getOrDefault(false)
+            if (deleted) {
+                remoteBookMap.remove(fileName)
+                remoteBookMap.remove(remoteBook.filename)
+                removeLocalBookByFileName(fileName)
+            } else {
+                remaining.add(fileName)
+            }
+        }
+        appCtx.putPrefStringSet(PreferKey.webDavBookPendingDeletes, remaining)
+        return remaining
+    }
+
+    private fun removeLocalBookByFileName(fileName: String) {
+        appDb.bookDao.getBookByFileName(fileName)?.let {
+            removeLocalBook(it)
+            return
+        }
+        // 队列里存的是远端名, 本地记录用的是截断后的名字
+        val localName = safeLocalFileName(fileName)
+        if (localName != fileName) {
+            appDb.bookDao.getBookByFileName(localName)?.let { removeLocalBook(it) }
+        }
+    }
+
+    private fun enqueuePendingDelete(fileName: String) {
+        if (fileName.isBlank()) return
+        val pending = appCtx.getPrefStringSet(PreferKey.webDavBookPendingDeletes)
+            ?.toMutableSet() ?: mutableSetOf()
+        if (pending.add(fileName)) {
+            appCtx.putPrefStringSet(PreferKey.webDavBookPendingDeletes, pending)
+        }
+    }
+
+    private fun removePendingDelete(fileName: String) {
+        val pending = appCtx.getPrefStringSet(PreferKey.webDavBookPendingDeletes)
+            ?.toMutableSet() ?: return
+        if (pending.remove(fileName)) {
+            appCtx.putPrefStringSet(PreferKey.webDavBookPendingDeletes, pending)
         }
     }
 

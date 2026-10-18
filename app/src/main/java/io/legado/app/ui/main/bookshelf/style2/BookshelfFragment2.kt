@@ -3,6 +3,7 @@ package io.legado.app.ui.main.bookshelf.style2
 import android.annotation.SuppressLint
 import android.graphics.Rect
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.View
 import android.view.ViewConfiguration
 import androidx.appcompat.widget.SearchView
@@ -83,6 +84,7 @@ class BookshelfFragment2() : BaseBookshelfFragment(R.layout.fragment_bookshelf2)
     private val bookshelfMargin by lazy { AppConfig.bookshelfMargin }
     private var itemCount = 0
     private var totalRows = 0
+    private var refreshStartedAt = 0L
 
     override fun onFragmentCreated(view: View, savedInstanceState: Bundle?) {
         setSupportToolbar(binding.titleBar.toolbar)
@@ -103,8 +105,15 @@ class BookshelfFragment2() : BaseBookshelfFragment(R.layout.fragment_bookshelf2)
         upFastScrollerBar()
         binding.refreshLayout.setColorSchemeColors(accentColor)
         binding.refreshLayout.setOnRefreshListener {
-            binding.refreshLayout.isRefreshing = false
+            // 原来这里第一行就把指示器关掉了, 下拉动画一闪而过, 看起来像"没有下拉刷新"
+            binding.refreshLayout.isRefreshing = true
+            refreshStartedAt = SystemClock.elapsedRealtime()
             activityViewModel.upToc(books, onlyUpdateRead)
+            activityViewModel.syncWebDavBooks { stopRefreshIndicator() }
+            binding.refreshLayout.postDelayed(
+                { stopRefreshIndicator(force = true) },
+                REFRESH_INDICATOR_TIMEOUT
+            )
         }
         if (bookshelfLayout >= 2) {
             binding.rvBookshelf.layoutManager = GridLayoutManager(context, bookshelfLayout)
@@ -240,7 +249,8 @@ class BookshelfFragment2() : BaseBookshelfFragment(R.layout.fragment_bookshelf2)
                     totalRows = if (itemCount % spanCount == 0) itemCount / spanCount else itemCount / spanCount + 1
                 }
                 binding.tvEmptyMsg.isGone = itemCount > 0
-                binding.refreshLayout.isEnabled = enableRefresh && itemCount > 0
+                // 空书架也允许下拉, 否则书库为空时没法手动触发 WebDAV 同步
+                binding.refreshLayout.isEnabled = enableRefresh
                 delay(100)
             }
         }
@@ -363,6 +373,30 @@ class BookshelfFragment2() : BaseBookshelfFragment(R.layout.fragment_bookshelf2)
         binding.rvBookshelf.onHorizontalSwipe = null
         binding.fastScroller.detachRecyclerView()
         super.onDestroyView()
+    }
+
+    /**
+     * 收掉下拉刷新指示器
+     *
+     * 同步可能一瞬间就返回, 立刻关掉会让人以为"下拉根本没反应", 所以至少显示 [REFRESH_INDICATOR_MIN_DURATION]
+     */
+    private fun stopRefreshIndicator(force: Boolean = false) {
+        if (!isAdded || view == null) return
+        val elapsed = SystemClock.elapsedRealtime() - refreshStartedAt
+        val delayMs = if (force) {
+            0L
+        } else {
+            (REFRESH_INDICATOR_MIN_DURATION - elapsed).coerceAtLeast(0L)
+        }
+        binding.refreshLayout.postDelayed({ binding.refreshLayout.isRefreshing = false }, delayMs)
+    }
+
+    private companion object {
+        /** 下拉刷新指示器至少显示这么久, 保证下拉有可见反馈 */
+        private const val REFRESH_INDICATOR_MIN_DURATION = 600L
+
+        /** 同步卡住时的兜底, 避免指示器一直转 */
+        private const val REFRESH_INDICATOR_TIMEOUT = 120_000L
     }
 }
 
