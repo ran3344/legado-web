@@ -206,8 +206,9 @@ class RemoteBookWebDavUploadTest {
         assertTrue(
             sync.contains("downloadRemoteBookToShelf(bookWebDav, remoteBook, localBook)")
         )
-        // 两边都有这本书时按修改时间谁新谁赢
-        assertTrue(sync.contains("decideBookSyncAction("))
+        // 两边都有这本书时按修改时间谁新谁赢(判定抽在 Book.syncAction() 里)
+        assertTrue(sync.contains("localBook.syncAction(remoteBook)"))
+        assertTrue(appWebDav.contains("decideBookSyncAction("))
         // 列目录没被截断时不再走条件上传, 免得服务端 If-None-Match 处理有误导致一直传不上去
         assertTrue(sync.contains("val uploadOverwrite = !remoteTruncated"))
         assertTrue(sync.contains("bookWebDav.upload(book, overwrite = uploadOverwrite)"))
@@ -361,7 +362,7 @@ class RemoteBookWebDavUploadTest {
 
         // 条件上传撞上远端已有同名文件 -> 412 是调用方预期的结果: 不写日志, 报错也换成中文
         val conditionalUpload = webDav.substringAfter("if (!overwrite) addHeader")
-            .substringBefore("suspend fun downloadInputStream")
+            .substringBefore("suspend fun upload(byteArray")
         assertTrue(conditionalUpload.contains("isWebDavOverwriteConflict(code)"))
         assertTrue(conditionalUpload.contains("远端已存在同名文件"))
         assertFalse(conditionalUpload.contains("AppLog.put(\"WebDav上传失败"))

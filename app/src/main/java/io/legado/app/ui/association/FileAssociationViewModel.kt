@@ -285,9 +285,9 @@ class FileAssociationViewModel(application: Application, private val savedState:
     }
 
     fun importBook(uri: Uri) {
-        execute { LocalBook.importFile(uri) }.onSuccess {
-            AppWebDav.autoUploadImportedBooks(listOf(it))
-            openBookLiveData.value = it
+        execute { LocalBook.importFile(uri) }.onSuccess { book ->
+            AppWebDav.autoUploadImportedBooks(listOf(book))
+            openBookLiveData.value = book
         }.onError { errorLive.value = it.localizedMessage }
     }
 
