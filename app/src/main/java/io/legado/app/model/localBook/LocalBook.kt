@@ -371,13 +371,12 @@ object LocalBook {
             book = preview?.copy(bookUrl = bookUrl, originName = fileName,
                 latestChapterTime = updateTime, order = appDb.bookDao.minOrder - 1)
                 ?: previewImportFile(uri)
-            val name = book.name
-            var suffix = 2
-            while (appDb.bookDao.insertIgnore(book) == -1L) {
-                if (preview == null) throw NoStackTraceException(
-                    appCtx.getString(R.string.local_book_identity_conflict, book.name, book.author))
-                // Only confirmed shared copies opt into preserving both colliding books.
-                book.name = "$name (${suffix++})"
+            // 书名/作者只是展示信息，文件路径才是书籍身份。
+            // 同名同作者的不同文件允许同时存在，不再靠改书名规避唯一约束。
+            if (appDb.bookDao.insertIgnore(book) == -1L) {
+                throw NoStackTraceException(
+                    appCtx.getString(R.string.local_book_identity_conflict, book.name, book.author)
+                )
             }
         } else {
             withParserCacheInvalidated(book) {

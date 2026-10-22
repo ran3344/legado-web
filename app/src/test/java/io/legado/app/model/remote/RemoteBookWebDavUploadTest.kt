@@ -14,6 +14,39 @@ import java.io.File
 class RemoteBookWebDavUploadTest {
 
     @Test
+    fun `book identity is the file path not name and author`() {
+        val first = Book(
+            bookUrl = "content://books/first/novel.txt",
+            origin = "${BookType.localTag}::novel.txt",
+            originName = "novel.txt",
+            name = "Same Name",
+            author = "Same Author",
+        )
+        val second = Book(
+            bookUrl = "content://books/second/novel.txt",
+            origin = "${BookType.localTag}::novel.txt",
+            originName = "novel.txt",
+            name = "Same Name",
+            author = "Same Author",
+        )
+
+        assertTrue(first.progressKey != second.progressKey)
+        assertEquals("content://books/first/novel.txt", first.progressKey)
+        assertEquals("content://books/second/novel.txt", second.progressKey)
+
+        first.applyRemoteBinding(
+            RemoteBook("remote/novel.txt", "https://dav/books/remote/novel.txt", 1, 2),
+            serverID = 1,
+        )
+        assertEquals("remote/novel.txt", first.progressKey)
+
+        val migrations = readProjectFile("src/main/java/io/legado/app/data/DatabaseMigrations.kt")
+        val entity = readProjectFile("src/main/java/io/legado/app/data/entities/Book.kt")
+        assertTrue(migrations.contains("DROP INDEX IF EXISTS index_books_name_author"))
+        assertFalse(entity.contains("Index(value = [\"name\", \"author\"], unique = true)"))
+    }
+
+    @Test
     fun `archive upload keeps the archive file name`() {
         val archiveBook = Book(
             origin = "${BookType.localTag}::source.zip",
@@ -203,9 +236,11 @@ class RemoteBookWebDavUploadTest {
         // 云端有本地没有 -> 下载; 本地新导入 -> 上传; 云端删除 -> 删除本地
         val sync = appWebDav.substringAfter("suspend fun syncLocalBooks(): Boolean")
             .substringBefore("fun syncLocalBooksAsync()")
-        assertTrue(
-            sync.contains("downloadRemoteBookToShelf(bookWebDav, remoteBook, localBook)")
-        )
+        assertTrue(sync.contains("downloadRemoteBookToShelf("))
+        assertTrue(sync.contains("localBookMap[remoteBook.filename]"))
+        assertFalse(appWebDav.contains("sameIdentity"))
+        assertTrue(appWebDav.contains("MD5Utils.md5Encode16(bookKey) + \".json\""))
+        assertTrue(appWebDav.contains("it.bookKey == bookKey"))
         // 两边都有这本书时按修改时间谁新谁赢(判定抽在 Book.syncAction() 里)
         assertTrue(sync.contains("localBook.syncAction(remoteBook)"))
         assertTrue(appWebDav.contains("decideBookSyncAction("))
@@ -299,15 +334,32 @@ class RemoteBookWebDavUploadTest {
     }
 
     @Test
-    fun `books without sync record stay put when sizes match`() {
-        // 老版本上传的书没有同步记录, 内容一样就不该来回覆盖
+    fun `books without sync record fall back to modification time`() {
+        // 老版本上传的书没有同步记录: 大小相同但本地时间更新, 说明本地换过新版本
         assertEquals(
-            BookSyncAction.NONE,
+            BookSyncAction.UPLOAD,
             decideBookSyncAction(
                 remoteSize = 100, remoteModify = 500, localSize = 100, localModify = 900,
                 recordedRemoteSize = null, recordedRemoteModify = null, recordedLocalModify = null,
             )
         )
+        // 大小相同但云端时间更新 -> 下载覆盖本地旧版本
+        assertEquals(
+            BookSyncAction.DOWNLOAD,
+            decideBookSyncAction(
+                remoteSize = 100, remoteModify = 900, localSize = 100, localModify = 500,
+                recordedRemoteSize = null, recordedRemoteModify = null, recordedLocalModify = null,
+            )
+        )
+        // 大小和时间都一样才认为没有变化
+        assertEquals(
+            BookSyncAction.NONE,
+            decideBookSyncAction(
+                remoteSize = 100, remoteModify = 500, localSize = 100, localModify = 500,
+                recordedRemoteSize = null, recordedRemoteModify = null, recordedLocalModify = null,
+            )
+        )
+        // 大小不同时同样按修改时间判断
         assertEquals(
             BookSyncAction.UPLOAD,
             decideBookSyncAction(
@@ -315,6 +367,30 @@ class RemoteBookWebDavUploadTest {
                 recordedRemoteSize = null, recordedRemoteModify = null, recordedLocalModify = null,
             )
         )
+    }
+
+    @Test
+    fun `local book bound to remote records sync state`() {
+        val book = Book(
+            origin = "${BookType.localTag}::book.txt",
+            originName = "book.txt",
+            name = "book",
+        )
+        val remote = RemoteBook("book.txt", "https://dav/books/book.txt", 123, 456)
+
+        book.applyRemoteBinding(remote, 9L)
+        book.setRemoteSyncState(
+            remoteName = remote.filename,
+            remoteSize = remote.size,
+            remoteModify = remote.lastModify,
+            localModify = 789,
+        )
+
+        assertTrue(book.origin.startsWith(BookType.webDavTag))
+        assertEquals("book.txt", book.remoteFileName())
+        assertEquals(123L, book.recordedRemoteSize() ?: -1L)
+        assertEquals(456L, book.recordedRemoteModify() ?: -1L)
+        assertEquals(789L, book.recordedLocalModify() ?: -1L)
     }
 
     @Test

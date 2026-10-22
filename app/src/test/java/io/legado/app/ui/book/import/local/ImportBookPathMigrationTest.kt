@@ -215,7 +215,11 @@ class ImportBookPathMigrationTest {
         assertFalse(localBook.contains("appDb.bookDao.insert(book)"))
         assertTrue(bookDao.contains("@Insert(onConflict = OnConflictStrategy.IGNORE)"))
         assertTrue(bookDao.contains("fun insertIgnore(book: Book): Long"))
-        assertTrue(book.contains("Index(value = [\"name\", \"author\"], unique = true)"))
+        assertFalse(book.contains("Index(value = [\"name\", \"author\"], unique = true)"))
+        val migrations = readProjectFile(
+            "src/main/java/io/legado/app/data/DatabaseMigrations.kt"
+        )
+        assertTrue(migrations.contains("DROP INDEX IF EXISTS index_books_name_author"))
 
         val baseActivity = readProjectFile(
             "src/main/java/io/legado/app/ui/book/import/BaseImportBookActivity.kt"
@@ -276,8 +280,12 @@ class ImportBookPathMigrationTest {
         val remoteRestore = localBook.substringAfter("fun downloadRemoteBook")
         assertTrue(remoteRestore.contains("restoreArchiveBookFile(localBook, archiveUri)"))
         assertTrue(remoteRestore.contains("localBook.cacheLocalUri(fileUri)"))
-        assertTrue(remoteRestore.contains("!AppConfig.webDavBookAutoRestore"))
-        assertTrue(remoteRestore.contains("AppWebDav.defaultBookWebDav ?: return false"))
+        assertTrue(
+            remoteRestore.contains(
+                "AppConfig.webDavBookAutoRestore || AppConfig.webDavBookAutoSync"
+            )
+        )
+        assertTrue(remoteRestore.contains("AppWebDav.defaultBookWebDav ?: run {"))
         assertTrue(remoteRestore.contains("bookWebDav.getRemoteBookList(bookWebDav.rootBookUrl)"))
         assertTrue(remoteRestore.contains("findExactRemoteBook(it, fileName)"))
         assertTrue(remoteRestore.contains("localBook.archiveName"))

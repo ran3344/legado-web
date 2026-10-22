@@ -1381,6 +1381,8 @@
     <string name="webdav_book_auto_delete_s">删除本地书籍时，同步删除 WebDAV 上的同名文件</string>
     <string name="webdav_book_auto_sync_t">书籍双向同步</string>
     <string name="webdav_book_auto_sync_s">让书架和 WebDAV 的 books 目录保持一致：远程缺的补上、本地新增的上传、两边删除互相同步</string>
+    <string name="webdav_log_auto_sync_t">日志同步到 WebDAV</string>
+    <string name="webdav_log_auto_sync_s">自动把应用日志和崩溃日志上传到 WebDAV 的 logs 目录，每台设备一个子文件夹；需先在“其他设置”中开启“记录日志”，否则没有日志内容可上传</string>
     <string name="webdav_book_sync_disabled">WebDAV 书籍双向同步未开启</string>
     <string name="webdav_book_sync_done">WebDAV 书库同步完成</string>
     <string name="webdav_book_sync_skipped">WebDAV 书库同步未执行，可能正在同步中或网络不可用</string>

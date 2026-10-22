@@ -79,6 +79,15 @@
 
         <io.legado.app.lib.prefs.SwitchPreference
             android:defaultValue="true"
+            android:key="webDavLogAutoSync"
+            android:summary="@string/webdav_log_auto_sync_s"
+            android:title="@string/webdav_log_auto_sync_t"
+            app:allowDividerAbove="false"
+            app:allowDividerBelow="false"
+            app:iconSpaceReserved="false" />
+
+        <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="true"
             android:key="syncBookProgress"
             android:summary="@string/sync_book_progress_s"
             android:title="@string/sync_book_progress_t"

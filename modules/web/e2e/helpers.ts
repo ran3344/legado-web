@@ -70,23 +70,21 @@ export const openReader = async (
 
 export const readerState = (page: Page): Promise<ReaderState | null> =>
   page.evaluate(() => {
-    const view = document.querySelector('foliate-view') as
-      | { renderer?: Record<string, unknown> | null }
-      | null
-    const r = view?.renderer as
-      | {
-          scrolled?: boolean
-          start?: number
-          end?: number
-          viewSize?: number
-          size?: number
-          pages?: number
-          page?: number
-          atStart?: boolean
-          atEnd?: boolean
-          getContents?: () => Array<{ doc?: Document }>
-        }
-      | null
+    const view = document.querySelector('foliate-view') as {
+      renderer?: Record<string, unknown> | null
+    } | null
+    const r = view?.renderer as {
+      scrolled?: boolean
+      start?: number
+      end?: number
+      viewSize?: number
+      size?: number
+      pages?: number
+      page?: number
+      atStart?: boolean
+      atEnd?: boolean
+      getContents?: () => Array<{ doc?: Document }>
+    } | null
     if (!r) return null
     const doc = r.getContents?.()?.[0]?.doc
     const articles = doc
@@ -115,10 +113,9 @@ export const readerState = (page: Page): Promise<ReaderState | null> =>
     }
   })
 
-export const pageIndicator = async (
-  page: Page,
-): Promise<PageIndicator> => {
-  const text = (await page.locator('.progress-control span').innerText()).trim()
+export const pageIndicator = async (page: Page): Promise<PageIndicator> => {
+  const text =
+    (await page.locator('.progress-control span').textContent())?.trim() ?? ''
   const match = text.match(/^(\d+)\s*\/\s*(\d+)$/)
   return match ? { current: Number(match[1]), total: Number(match[2]) } : null
 }
@@ -208,10 +205,10 @@ export const visibleMarker = (page: Page): Promise<Marker> =>
     }
     if (!best) return null
     const rect = best.getBoundingClientRect()
-    const article = best.closest<HTMLElement>("[data-legado-chapter]")
-    const chapterId = article?.dataset.legadoChapter ?? ""
+    const article = best.closest<HTMLElement>('[data-legado-chapter]')
+    const chapterId = article?.dataset.legadoChapter ?? ''
     const paragraphsInArticle = article
-      ? Array.from(article.querySelectorAll<HTMLElement>("p"))
+      ? Array.from(article.querySelectorAll<HTMLElement>('p'))
       : []
     const paragraphIndex = paragraphsInArticle.indexOf(best)
     return {
@@ -227,24 +224,24 @@ export const visibleMarker = (page: Page): Promise<Marker> =>
 
 export const findMarkerById = (page: Page, id: string): Promise<Marker> =>
   page.evaluate(id => {
-    const r = (document.querySelector("foliate-view") as any)?.renderer
+    const r = (document.querySelector('foliate-view') as any)?.renderer
     const doc = r?.getContents?.()?.[0]?.doc as Document | null
     if (!r || !doc) return null
-    const [chapterId, rawIndex] = id.split(":")
+    const [chapterId, rawIndex] = id.split(':')
     const article = doc.querySelector<HTMLElement>(
       `[data-legado-chapter="${chapterId}"]`,
     )
     if (!article) return null
-    const paragraph = Array.from(
-      article.querySelectorAll<HTMLElement>("p"),
-    )[Number(rawIndex)]
+    const paragraph = Array.from(article.querySelectorAll<HTMLElement>('p'))[
+      Number(rawIndex)
+    ]
     if (!paragraph) return null
     const rect = paragraph.getBoundingClientRect()
     return {
       start: r.start,
       contentTop: rect.top,
       viewOffset: rect.top - r.start,
-      text: paragraph.textContent?.slice(0, 16) ?? "",
+      text: paragraph.textContent?.slice(0, 16) ?? '',
       chapterId,
       paragraphIndex: Number(rawIndex),
       id,
@@ -297,7 +294,15 @@ export const watchOffsetStability = async (
   )
 }
 
+export const openReaderMenu = async (page: Page) => {
+  const header = page.locator('.reader-header')
+  if (await header.isVisible()) return
+  await page.locator('.reader-stage').click()
+  await expect(header).toBeVisible()
+}
+
 export const openCatalogAt = async (page: Page, chapterIndex: number) => {
+  await openReaderMenu(page)
   await page.locator('.reader-footer button[title="目录"]').first().click()
   const list = page.locator('.catalog-list')
   await expect(list).toBeVisible()
@@ -311,7 +316,3 @@ export const openCatalogAt = async (page: Page, chapterIndex: number) => {
   await item.click()
   await expect(page.locator('.catalog-panel')).toHaveCount(0)
 }
-
-
-
-

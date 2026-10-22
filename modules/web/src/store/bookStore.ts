@@ -78,6 +78,10 @@ export const useBookStore = defineStore('book', {
         durChapterPos: chapterPos,
         durChapterTime: new Date().getTime(),
         durChapterTitle: title,
+        bookUrl: state.readingBook.bookUrl,
+        bookKey: state.readingBook.bookUrl?.startsWith('local:')
+          ? state.readingBook.bookUrl.slice('local:'.length)
+          : undefined,
       }
     },
     theme: state => {
@@ -86,8 +90,11 @@ export const useBookStore = defineStore('book', {
     isNight: state => state.config.theme == 6,
   },
   actions: {
-    /** 从后端加载书架书籍，优先返回内存缓存 */
-    async loadBookShelf(): Promise<Book[]> {
+    /**
+     * 从后端加载书架书籍，优先返回内存缓存
+     * @param silent 后台轮询时静默失败，不弹错误提示
+     */
+    async loadBookShelf(silent = false): Promise<Book[]> {
       const fetchBookshellf_promise = API.getBookShelf().then(resp => {
         console.log('API.getBookShelf数据返回')
         const { isSuccess, data, errorMsg } = resp.data
@@ -97,9 +104,14 @@ export const useBookStore = defineStore('book', {
           if (errorMsg.includes('还没有添加小说') && this.shelf.length > 0) {
             return (this.shelf = [])
           }
-          ElMessage.error(errorMsg ?? '后端返回格式错误！')
+          if (!silent) ElMessage.error(errorMsg ?? '后端返回格式错误！')
         }
         console.log('书架数据已更新')
+        return this.shelf
+      }).catch(error => {
+        // 后台轮询失败时保留当前书架，下次轮询再试
+        if (this.shelf.length === 0 || !silent) throw error
+        console.warn('书架刷新失败，保留当前列表', error)
         return this.shelf
       })
 

@@ -378,6 +378,12 @@ class ExportBookService : BaseService() {
         val src: String
     )
 
+    private data class ExportData(
+        val text: String,
+        val srcList: ArrayList<SrcData>?,
+        val hasBody: Boolean,
+    )
+
     private fun getChapterContentForExport(book: Book, chapter: BookChapter): String? {
         return resolveExportChapterContent(
             content = BookHelp.getContent(book, chapter),
@@ -401,8 +407,8 @@ class ExportBookService : BaseService() {
         var chapterNum = 0
         try {
             bookDoc.openOutputStream().getOrThrow().bufferedWriter(charset).use { bw ->
-                getAllContents(book) { text, srcList ->
-                    if (text.isNotEmpty()) {
+                getAllContents(book) { text, srcList, hasBody ->
+                    if (hasBody) {
                         chapterNum++
                     }
                     bw.write(text)
@@ -772,7 +778,7 @@ class ExportBookService : BaseService() {
 
     private suspend fun getAllContents(
         book: Book,
-        append: (text: String, srcList: ArrayList<SrcData>?) -> Unit
+        append: (text: String, srcList: ArrayList<SrcData>?, hasBody: Boolean) -> Unit
     ) = coroutineScope {
         val useReplace = AppConfig.exportUseReplace && book.getUseReplaceRule()
         val contentProcessor = ContentProcessor.get(book.name, book.origin)
@@ -784,7 +790,8 @@ class ExportBookService : BaseService() {
                 "\n" + HtmlFormatter.format(book.getDisplayIntro())
             )
         }"
-        append(sanitizeExportContent(qy), null)
+        // 书头只是书籍信息, 不能算作一章正文
+        append(sanitizeExportContent(qy), null, false)
         val threads = if (AppConfig.parallelExportBook) {
             AppConst.MAX_THREAD
         } else {
@@ -799,7 +806,7 @@ class ExportBookService : BaseService() {
         }.collectIndexed { index, result ->
             postEvent(EventBus.EXPORT_BOOK, book.bookUrl)
             exportProgress[book.bookUrl] = index
-            append.invoke(result.first, result.second)
+            append.invoke(result.text, result.srcList, result.hasBody)
         }
 
     }
@@ -809,9 +816,11 @@ class ExportBookService : BaseService() {
         chapter: BookChapter,
         contentProcessor: ContentProcessor,
         useReplace: Boolean
-    ): Pair<String, ArrayList<SrcData>?> {
+    ): ExportData {
         val content = getChapterContentForExport(book, chapter)
-            ?: return Pair("", null)
+            ?: return ExportData("", null, false)
+        // 卷名或空章节可能只有标题, 没有正文时不能算作有效章节
+        val hasBody = hasExportChapterBody(content)
         val content1 = HtmlFormatter.format(
             contentProcessor.getContent(
                 book,
@@ -836,9 +845,9 @@ class ExportBookService : BaseService() {
                     }
                 }
             }
-            return Pair("\n\n$content1", srcList)
+            return ExportData("\n\n$content1", srcList, hasBody)
         } else {
-            return Pair("\n\n$content1", null)
+            return ExportData("\n\n$content1", null, hasBody)
         }
     }
 

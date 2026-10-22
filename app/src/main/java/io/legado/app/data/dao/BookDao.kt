@@ -125,7 +125,7 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE bookUrl = :bookUrl")
     fun getBook(bookUrl: String): Book?
 
-    @Query("SELECT * FROM books WHERE name = :name and author = :author")
+    @Query("SELECT * FROM books WHERE name = :name and author = :author LIMIT 1")
     fun getBook(name: String, author: String): Book?
 
     @Query("""select distinct bs.* from books, book_sources bs 
@@ -223,21 +223,9 @@ interface BookDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertRows(vararg book: Book)
 
-    @Query("""select books.bookUrl from books inner join book_memos using (bookUrl)
-        where books.name = :name and books.author = :author and books.bookUrl != :newBookUrl""")
-    fun getReplacedMemoBookUrl(name: String, author: String, newBookUrl: String): String?
-
     @Transaction
     fun insert(vararg book: Book) {
-        book.forEach { item ->
-            // The existing name/author unique index can replace a different URL on import.
-            val previousMemoOwner = getReplacedMemoBookUrl(item.name, item.author, item.bookUrl)
-            insertRows(item)
-            if (previousMemoOwner != null) {
-                copyNewerMemo(previousMemoOwner, item.bookUrl)
-                deleteMemo(previousMemoOwner)
-            }
-        }
+        insertRows(*book)
     }
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -275,7 +263,7 @@ interface BookDao {
     @Transaction
     fun upsertPreservingVariable(book: Book) {
         val existingByUrl = getBook(book.bookUrl)
-        (existingByUrl ?: getBook(book.name, book.author))?.let { existing ->
+        existingByUrl?.let { existing ->
             book.variable = existing.variable
         }
         if (existingByUrl != null) {

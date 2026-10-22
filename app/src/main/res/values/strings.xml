@@ -1386,6 +1386,8 @@
     <string name="webdav_book_auto_delete_s">Delete the matching WebDAV file when a local book is removed</string>
     <string name="webdav_book_auto_sync_t">Two-way book sync</string>
     <string name="webdav_book_auto_sync_s">Keep the bookshelf and the WebDAV books directory in sync: download missing books, upload new ones and mirror deletions</string>
+    <string name="webdav_log_auto_sync_t">Sync logs to WebDAV</string>
+    <string name="webdav_log_auto_sync_s">Upload app logs and crash logs to the WebDAV logs folder, one subfolder per device. Enable “Record log” first, otherwise there is no log content to upload.</string>
     <string name="webdav_book_sync_disabled">Two-way book sync is off</string>
     <string name="webdav_book_sync_done">WebDAV bookshelf sync finished</string>
     <string name="webdav_book_sync_skipped">WebDAV bookshelf sync did not run (already running or offline)</string>

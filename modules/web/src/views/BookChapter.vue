@@ -4,7 +4,11 @@
     :class="{ night: store.config.theme === 6 }"
     :style="pageStyle"
   >
-    <header class="reader-header">
+    <header
+      class="reader-header"
+      :class="{ visible: menuVisible }"
+      @click.self="hideReaderMenu"
+    >
       <button
         class="reader-button"
         type="button"
@@ -39,10 +43,7 @@
         </button>
       </div>
     </header>
-    <aside
-      v-if="catalogVisible"
-      class="catalog-panel"
-    >
+    <aside v-if="catalogVisible" class="catalog-panel">
       <div class="panel-heading">
         <strong>目录</strong
         ><button
@@ -97,11 +98,7 @@
     <aside v-if="settingsVisible" class="settings-panel">
       <FoliateReaderSettings />
     </aside>
-    <section
-      ref="readerStage"
-      class="reader-stage"
-      @click="handleStageClick"
-    >
+    <section ref="readerStage" class="reader-stage" @click="handleStageClick">
       <foliate-view ref="viewElement" class="foliate-view" />
       <div
         v-if="store.config.readMode === 'click'"
@@ -118,16 +115,36 @@
           type="button"
           :aria-label="area.label"
           @pointerdown.stop
-          @click.stop="handleClickCellClick($event, store.config.clickActions[area.key])"
+          @click.stop="
+            handleClickCellClick($event, store.config.clickActions[area.key])
+          "
         />
       </div>
+      <button
+        v-if="store.config.readMode === 'click' && !menuVisible"
+        class="reader-menu-edge reader-menu-edge-top"
+        type="button"
+        aria-label="显示阅读菜单"
+        @click.stop="toggleReaderMenu"
+      />
+      <button
+        v-if="store.config.readMode === 'click' && !menuVisible"
+        class="reader-menu-edge reader-menu-edge-bottom"
+        type="button"
+        aria-label="显示阅读菜单"
+        @click.stop="toggleReaderMenu"
+      />
       <div v-if="errorMessage" class="reader-error">
         <p>{{ errorMessage }}</p>
         <button type="button" @click="toShelf">返回书架</button>
       </div>
       <div v-if="loading" class="reader-loading">正在打开章节...</div>
     </section>
-    <footer class="reader-footer">
+    <footer
+      class="reader-footer"
+      :class="{ visible: menuVisible }"
+      @click.self="hideReaderMenu"
+    >
       <button
         class="reader-button"
         type="button"
@@ -154,7 +171,9 @@
           aria-label="当前章节进度"
           @pointerup="commitSeek"
           @change="commitSeek"
-        /><span>{{ chapterPageInfo.current }} / {{ chapterPageInfo.total }}</span>
+        /><span
+          >{{ chapterPageInfo.current }} / {{ chapterPageInfo.total }}</span
+        >
       </div>
       <button
         class="reader-button"
@@ -173,6 +192,14 @@
         <Memo />
       </button>
     </footer>
+    <div
+      v-if="catalog.length && !loading && !errorMessage"
+      class="book-progress"
+      :class="{ 'above-footer': menuVisible }"
+      aria-label="全书阅读进度"
+    >
+      全书 {{ bookProgressText }}
+    </div>
   </main>
 </template>
 
@@ -216,12 +243,10 @@ import { demoBook, demoCatalog, getDemoContent } from '@/features/demo/demoBook'
 
 type FoliateRenderer = HTMLElement & {
   setStyles: (styles: string) => void
-  goTo: (
-    target: {
-      index: number
-      anchor?: number | (() => Element | Range | null)
-    },
-  ) => Promise<void>
+  goTo: (target: {
+    index: number
+    anchor?: number | (() => Element | Range | null)
+  }) => Promise<void>
   prev: () => Promise<void>
   next: () => Promise<void>
   prevSection: () => Promise<void>
@@ -297,7 +322,9 @@ const CATALOG_OVERSCAN = 8
 const catalogScrollTop = ref(0)
 const catalogViewportHeight = ref(480)
 const virtualCatalog = computed(() => {
-  const visibleCount = Math.ceil(catalogViewportHeight.value / CATALOG_ITEM_HEIGHT)
+  const visibleCount = Math.ceil(
+    catalogViewportHeight.value / CATALOG_ITEM_HEIGHT,
+  )
   const start = Math.max(
     0,
     Math.floor(catalogScrollTop.value / CATALOG_ITEM_HEIGHT) - CATALOG_OVERSCAN,
@@ -311,18 +338,20 @@ const virtualCatalog = computed(() => {
     index: start + offset,
   }))
 })
-const catalogTopSpacer = computed(() =>
-  Math.max(0, virtualCatalog.value[0]?.index || 0) * CATALOG_ITEM_HEIGHT,
+const catalogTopSpacer = computed(
+  () => Math.max(0, virtualCatalog.value[0]?.index || 0) * CATALOG_ITEM_HEIGHT,
 )
-const catalogBottomSpacer = computed(() =>
-  Math.max(
-    0,
-    catalog.value.length -
-      (virtualCatalog.value[virtualCatalog.value.length - 1]?.index ?? -1) -
-      1,
-  ) * CATALOG_ITEM_HEIGHT,
+const catalogBottomSpacer = computed(
+  () =>
+    Math.max(
+      0,
+      catalog.value.length -
+        (virtualCatalog.value[virtualCatalog.value.length - 1]?.index ?? -1) -
+        1,
+    ) * CATALOG_ITEM_HEIGHT,
 )
 const settingsVisible = ref(false)
+const menuVisible = ref(false)
 const errorMessage = ref('')
 const isFullscreen = ref(false)
 let boundaryTimer: ReturnType<typeof setTimeout> | undefined
@@ -333,9 +362,7 @@ let modeReloading = false
 const boundReaderDocuments = new WeakSet<Document>()
 let pagePrefetch: Promise<boolean> | undefined
 let pageNavigationPromise: Promise<void> | undefined
-let pendingChapterTarget:
-  | { index: number; navigationId: number }
-  | undefined
+let pendingChapterTarget: { index: number; navigationId: number } | undefined
 let seekingOverall = false
 let lastProgressAxis = 0
 let lastObservedScrollAxis = 0
@@ -378,9 +405,10 @@ let contentLoader:
 const createReaderBook = async (): Promise<
   LegadoFoliateBook | ContinuousLegadoFoliateBook
 > => {
-  const create = store.config.readMode === 'scroll'
-    ? createContinuousLegadoFoliateBook
-    : createLegadoFoliateBook
+  const create =
+    store.config.readMode === 'scroll'
+      ? createContinuousLegadoFoliateBook
+      : createLegadoFoliateBook
   try {
     return await create(
       book,
@@ -406,6 +434,28 @@ const getChapterLengths = (): ChapterLengths =>
   )
 const getBookProgress = (position: ReaderPosition) =>
   getBookFraction(catalog.value, position, getChapterLengths())
+const bookProgressPercent = computed(() => {
+  if (!catalog.value.length) return 0
+  const lengths = getChapterLengths()
+  const hasChapterRanges = catalog.value.some(
+    chapter =>
+      typeof chapter.start === 'number' &&
+      typeof chapter.end === 'number' &&
+      chapter.end > chapter.start,
+  )
+  const chapterFraction = Number.isFinite(progressDraft.value)
+    ? Math.max(0, Math.min(1, progressDraft.value / 100))
+    : 0
+  const value =
+    lengths.some(length => typeof length === 'number') || hasChapterRanges
+      ? getBookProgress(readerPosition.value) * 100
+      : ((currentIndex.value + chapterFraction) / catalog.value.length) * 100
+  return Math.max(0, Math.min(100, value))
+})
+const bookProgressText = computed(() => {
+  const rounded = Math.round(bookProgressPercent.value * 10) / 10
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}%`
+})
 const saveProgressNow = () => {
   if (progressSaveTimer) clearTimeout(progressSaveTimer)
   progressSaveTimer = undefined
@@ -609,10 +659,7 @@ const measureChapterPages = (
   const firstPage = Math.max(1, Math.floor((left + 1) / size))
   const lastPage = Math.max(firstPage, Math.ceil((right - 1) / size) - 1)
   const total = lastPage - firstPage + 1
-  const current = Math.min(
-    total,
-    Math.max(1, renderer.page - firstPage + 1),
-  )
+  const current = Math.min(total, Math.max(1, renderer.page - firstPage + 1))
   return { current, total, firstPage, measured: true }
 }
 const refreshChapterPageInfo = (
@@ -636,10 +683,7 @@ const refreshChapterPageInfo = (
   const measured = measureChapterPages(chapter, renderer)
   chapterPageInfo.value = { current: measured.current, total: measured.total }
 }
-const getChapterOffsetFromRange = (
-  chapter: HTMLElement,
-  range?: Range,
-) => {
+const getChapterOffsetFromRange = (chapter: HTMLElement, range?: Range) => {
   if (!range) return undefined
   const container =
     range.startContainer.nodeType === Node.TEXT_NODE
@@ -696,9 +740,16 @@ const commitMeasuredProgress = (
     displayedProgress ?? measuredFraction * 100,
   )
 }
-const updateScrollProgress = (document: Document, renderer: FoliateRenderer) => {
+const updateScrollProgress = (
+  document: Document,
+  renderer: FoliateRenderer,
+) => {
   const index =
-    continuousBook.value?.continuous.getChapterAt(document, renderer.start, false) || 0
+    continuousBook.value?.continuous.getChapterAt(
+      document,
+      renderer.start,
+      false,
+    ) || 0
   const chapter = document.querySelector<HTMLElement>(
     `[data-legado-chapter="${index}"]`,
   )
@@ -711,7 +762,11 @@ const updateScrollProgress = (document: Document, renderer: FoliateRenderer) => 
     : (Math.max(renderer.start, chapter.offsetTop) - chapter.offsetTop) /
       chapterHeight
   chapterPageInfo.value = measureChapterPages(chapter, renderer)
-  commitMeasuredProgress(renderer, index, Math.max(0, Math.min(1, localFraction)))
+  commitMeasuredProgress(
+    renderer,
+    index,
+    Math.max(0, Math.min(1, localFraction)),
+  )
 }
 const updatePaginatedProgress = (
   document: Document,
@@ -919,10 +974,7 @@ const trimReaderWindow = async (
       commitReaderSnapshot(renderer, document)
   }
 }
-const requestPagePrefetch = (
-  renderer: FoliateRenderer,
-  document: Document,
-) => {
+const requestPagePrefetch = (renderer: FoliateRenderer, document: Document) => {
   if (pagePrefetch) return pagePrefetch
   const pending = appendNextChapter(renderer, document)
   const tracked = pending.finally(() => {
@@ -941,7 +993,9 @@ const ensureScrollableContent = async (
       document.querySelectorAll<HTMLElement>('[data-legado-chapter]'),
     )
     const contentEnd = chapters.length
-      ? Math.max(...chapters.map(chapter => chapter.offsetTop + chapter.offsetHeight))
+      ? Math.max(
+          ...chapters.map(chapter => chapter.offsetTop + chapter.offsetHeight),
+        )
       : document.body.scrollHeight
     if (contentEnd - renderer.start > renderer.size + 8) return
     if (!(await appendNextChapter(renderer, document))) return
@@ -980,7 +1034,7 @@ const restoreChapterPosition = async (
   chapterOffset = 0,
   isCurrent: () => boolean = () => true,
   rendered?: { value: boolean },
-) : Promise<boolean> => {
+): Promise<boolean> => {
   const document = renderer.getContents()[0]?.doc
   if (!continuousBook.value || !document || !isCurrent()) return false
   let article = document.querySelector<HTMLElement>(
@@ -1018,14 +1072,13 @@ const next = async () => {
     if (!renderer.scrolled) {
       const document = renderer.getContents()[0]?.doc
       if (document) {
-        const nearEnd =
-          renderer.end >= renderer.viewSize - renderer.size * 1.5
-          if (renderer.atEnd) {
-            const added = await requestPagePrefetch(renderer, document)
-            if (!token.isCurrent()) return
-            if (added) {
-              await renderer.next()
-              return
+        const nearEnd = renderer.end >= renderer.viewSize - renderer.size * 1.5
+        if (renderer.atEnd) {
+          const added = await requestPagePrefetch(renderer, document)
+          if (!token.isCurrent()) return
+          if (added) {
+            await renderer.next()
+            return
           }
         } else if (nearEnd) {
           void requestPagePrefetch(renderer, document)
@@ -1057,7 +1110,8 @@ const navigateSection = (direction: -1 | 1) => {
   if (!renderer) return
   const token = beginNavigation('boundary')
   scrollDirection = direction > 0 ? 'forward' : 'backward'
-  const operation = direction > 0 ? renderer.nextSection() : renderer.prevSection()
+  const operation =
+    direction > 0 ? renderer.nextSection() : renderer.prevSection()
   const tracked = operation.finally(() => {
     finishNavigation(token)
     if (pageNavigationPromise === tracked) pageNavigationPromise = undefined
@@ -1070,13 +1124,24 @@ const previousChapter = () => {
 }
 const nextChapter = () => {
   const base = pendingChapterTarget?.index ?? currentIndex.value
-  if (base < catalog.value.length - 1)
-    void goChapter(base + 1, 'next-chapter')
+  if (base < catalog.value.length - 1) void goChapter(base + 1, 'next-chapter')
+}
+const showReaderMenu = () => {
+  menuVisible.value = true
+}
+const hideReaderMenu = () => {
+  menuVisible.value = false
+  catalogVisible.value = false
+  settingsVisible.value = false
+}
+const toggleReaderMenu = () => {
+  if (menuVisible.value) hideReaderMenu()
+  else showReaderMenu()
 }
 const executeClickAction = (action: ReadClickAction) => {
   switch (action) {
     case 'menu':
-      settingsVisible.value = !settingsVisible.value
+      toggleReaderMenu()
       break
     case 'prevPage':
       void previous()
@@ -1093,7 +1158,12 @@ const executeClickAction = (action: ReadClickAction) => {
   }
 }
 const handleReaderDocumentClick = (event: MouseEvent) => {
-  if (store.config.readMode !== 'click') return
+  if (menuVisible.value) {
+    event.preventDefault()
+    event.stopPropagation()
+    hideReaderMenu()
+    return
+  }
   const target = event.target
   if (
     target instanceof Element &&
@@ -1101,6 +1171,11 @@ const handleReaderDocumentClick = (event: MouseEvent) => {
   )
     return
   const document = event.currentTarget as Document
+  if (!document.getSelection()?.isCollapsed) return
+  if (store.config.readMode !== 'click') {
+    showReaderMenu()
+    return
+  }
   const window = document.defaultView
   if (!window) return
   const area = getReadClickArea(
@@ -1151,10 +1226,7 @@ const handleReaderScroll = () => {
     else if (targetIndex < currentIndex.value) navigateSection(-1)
   }, 420)
 }
-const goChapter = async (
-  index: number,
-  kind: NavigationKind = 'catalog',
-) => {
+const goChapter = async (index: number, kind: NavigationKind = 'catalog') => {
   const renderer = viewElement.value?.renderer
   if (!renderer) return
   if (index < 0 || index >= catalog.value.length) return
@@ -1172,10 +1244,20 @@ const goChapter = async (
       if (document) {
         if (index > currentIndex.value) scrollDirection = 'forward'
         else if (index < currentIndex.value) scrollDirection = 'backward'
-        restored = await restoreChapterPosition(renderer, index, 0, token.isCurrent)
+        restored = await restoreChapterPosition(
+          renderer,
+          index,
+          0,
+          token.isCurrent,
+        )
         if (!restored && token.isCurrent()) {
           await new Promise<void>(resolve => setTimeout(resolve, 120))
-          restored = await restoreChapterPosition(renderer, index, 0, token.isCurrent)
+          restored = await restoreChapterPosition(
+            renderer,
+            index,
+            0,
+            token.isCurrent,
+          )
         }
         if (restored && token.isCurrent()) {
           setReaderPosition(getReaderPosition(catalog.value, index, 0))
@@ -1239,7 +1321,11 @@ const seekChapter = () => {
     total: currentPageTotal,
   }
   const target = currentIndex.value
-  const requestedPosition = getReaderPosition(catalog.value, target, requestedOffset)
+  const requestedPosition = getReaderPosition(
+    catalog.value,
+    target,
+    requestedOffset,
+  )
   const token = beginNavigation('progress')
   if (continuousBook.value) {
     const document = renderer.getContents()[0]?.doc
@@ -1250,16 +1336,15 @@ const seekChapter = () => {
         )
         const pageInfo = measureChapterPages(chapter, renderer)
         const rendererTotalPages = Math.max(renderer.pages - 2, 1)
-        const targetPage =
-          pageInfo.measured
-            ? pageInfo.firstPage +
-              Math.round(
-                (requestedProgress / 100) * Math.max(pageInfo.total - 1, 0),
-              )
-            : 1 +
-              Math.round(
-                (requestedProgress / 100) * Math.max(rendererTotalPages - 1, 0),
-              )
+        const targetPage = pageInfo.measured
+          ? pageInfo.firstPage +
+            Math.round(
+              (requestedProgress / 100) * Math.max(pageInfo.total - 1, 0),
+            )
+          : 1 +
+            Math.round(
+              (requestedProgress / 100) * Math.max(rendererTotalPages - 1, 0),
+            )
         const previousPosition = readerPosition.value
         seekingOverall = true
         const operation = renderer.goToPage
@@ -1288,7 +1373,9 @@ const seekChapter = () => {
         document.querySelector(`[data-legado-chapter="${target}"]`),
       )
       scrollDirection =
-        requestedOffset >= previousPosition.chapterOffset ? 'forward' : 'backward'
+        requestedOffset >= previousPosition.chapterOffset
+          ? 'forward'
+          : 'backward'
       seekingOverall = true
       suppressProgressUntil = Date.now() + 600
       const rendered = { value: false }
@@ -1320,7 +1407,9 @@ const seekChapter = () => {
           if (!targetLoaded && !rendered.value) {
             renderer.render()
             await new Promise<void>(resolve =>
-              requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              ),
             )
           }
           if (!token.isCurrent()) return
@@ -1338,11 +1427,15 @@ const seekChapter = () => {
         .finally(() => {
           if (!token.isCurrent()) return
           seekingOverall = false
-           progressDraft.value =
-             getChapterFraction(catalog.value, readerPosition.value, getChapterLengths()) * 100
-            refreshChapterPageInfo(renderer, readerPosition.value.chapterIndex)
-            suppressProgressUntil = 0
-            finishNavigation(token)
+          progressDraft.value =
+            getChapterFraction(
+              catalog.value,
+              readerPosition.value,
+              getChapterLengths(),
+            ) * 100
+          refreshChapterPageInfo(renderer, readerPosition.value.chapterIndex)
+          suppressProgressUntil = 0
+          finishNavigation(token)
         })
     } else {
       seekingOverall = false
@@ -1353,31 +1446,49 @@ const seekChapter = () => {
   const totalPages = Math.max(renderer.pages - 2, 1)
   const targetPage =
     1 + Math.round((requestedProgress / 100) * Math.max(totalPages - 1, 0))
-  void (renderer.goToPage
-    ? renderer.goToPage(targetPage)
-    : renderer.goTo({ index: target, anchor: requestedProgress / 100 }))
-    .finally(() => finishNavigation(token))
+  void (
+    renderer.goToPage
+      ? renderer.goToPage(targetPage)
+      : renderer.goTo({ index: target, anchor: requestedProgress / 100 })
+  ).finally(() => finishNavigation(token))
 }
 const commitSeek = () => {
   const value = Number(progressDraft.value)
   const now = Date.now()
-  if (Math.abs(value - lastSeekCommit.value) < 0.01 && now - lastSeekCommit.at < 180)
+  if (
+    Math.abs(value - lastSeekCommit.value) < 0.01 &&
+    now - lastSeekCommit.at < 180
+  )
     return
   lastSeekCommit = { value, at: now }
   seekChapter()
 }
 const handleStageClick = (event: MouseEvent) => {
-  if (store.config.readMode !== 'click' || !viewElement.value?.renderer) return
+  const target = event.target
+  if (
+    target instanceof Element &&
+    target.closest('a,button,input,select,textarea')
+  )
+    return
   if (Date.now() < suppressClickUntil) {
     event.preventDefault()
     return
   }
-  const target = event.currentTarget as HTMLElement
+  if (menuVisible.value) {
+    event.preventDefault()
+    hideReaderMenu()
+    return
+  }
+  if (store.config.readMode !== 'click' || !viewElement.value?.renderer) {
+    showReaderMenu()
+    return
+  }
+  const stage = event.currentTarget as HTMLElement
   const area = getReadClickArea(
     event.clientX,
     event.clientY,
-    target.clientWidth,
-    target.clientHeight,
+    stage.clientWidth,
+    stage.clientHeight,
   )
   executeClickAction(store.config.clickActions[area])
 }
@@ -1416,6 +1527,11 @@ const handleClickModeTouchEnd = (event: TouchEvent) => {
 const handleClickCellClick = (event: MouseEvent, action: ReadClickAction) => {
   if (Date.now() < suppressClickUntil) {
     event.preventDefault()
+    return
+  }
+  if (menuVisible.value) {
+    event.preventDefault()
+    hideReaderMenu()
     return
   }
   executeClickAction(action)
@@ -1507,14 +1623,15 @@ const bindRendererEvents = (view: FoliateView) => {
     )
   })
   view.renderer.addEventListener('relocate', (event: Event) => {
-    const detail = (event as CustomEvent<{
-      index: number
-      fraction: number
-      range?: Range
-      page?: number
-      pages?: number
-    }>)
-      .detail
+    const detail = (
+      event as CustomEvent<{
+        index: number
+        fraction: number
+        range?: Range
+        page?: number
+        pages?: number
+      }>
+    ).detail
     if (detail.range) lastVisibleRange = detail.range.cloneRange()
     const document = view.renderer.getContents()[0]?.doc
     if (continuousBook.value && document) {
@@ -1591,7 +1708,11 @@ const reloadReaderForMode = async () => {
       store.config.readMode === 'scroll' &&
       continuousBook.value &&
       previousPosition.chapterIndex === 0 &&
-      getChapterFraction(catalog.value, previousPosition, getChapterLengths()) === 0
+      getChapterFraction(
+        catalog.value,
+        previousPosition,
+        getChapterLengths(),
+      ) === 0
     ) {
       const document = view.renderer.getContents()[0]?.doc
       if (document) await ensureScrollableContent(view.renderer, document)
@@ -1703,20 +1824,25 @@ onMounted(async () => {
       0,
       Math.min(catalog.value.length - 1, store.readingBook.chapterIndex || 0),
     )
-    setReaderPosition(getReaderPosition(
-      catalog.value,
-      initialIndex,
-      store.readingBook.chapterPos || 0,
-    ))
+    setReaderPosition(
+      getReaderPosition(
+        catalog.value,
+        initialIndex,
+        store.readingBook.chapterPos || 0,
+      ),
+    )
     await view.renderer.goTo({ index: 0, anchor: 0 })
-    if (store.config.readMode === 'scroll' && continuousBook.value && initialIndex > 0) {
+    if (
+      store.config.readMode === 'scroll' &&
+      continuousBook.value &&
+      initialIndex > 0
+    ) {
       await restoreChapterPosition(
         view.renderer,
         initialIndex,
         readerPosition.value.chapterOffset,
       )
-    }
-    else if (store.config.readMode !== 'scroll')
+    } else if (store.config.readMode !== 'scroll')
       await view.renderer.goTo({
         index: initialIndex,
         anchor: getChapterFraction(
@@ -1725,7 +1851,11 @@ onMounted(async () => {
           getChapterLengths(),
         ),
       })
-    if (store.config.readMode === 'scroll' && continuousBook.value && initialIndex === 0)
+    if (
+      store.config.readMode === 'scroll' &&
+      continuousBook.value &&
+      initialIndex === 0
+    )
       await restoreChapterPosition(
         view.renderer,
         0,
@@ -1762,8 +1892,6 @@ onBeforeUnmount(() => {
 <style scoped>
 .reader-page {
   position: relative;
-  display: grid;
-  grid-template-rows: 54px minmax(0, 1fr) auto;
   height: 100%;
   height: 100dvh;
   min-height: 100vh;
@@ -1771,7 +1899,9 @@ onBeforeUnmount(() => {
   overflow: hidden;
   background: var(--page-bg);
   color: var(--page-fg);
-  --reader-surface: color-mix(in srgb, var(--page-bg) 94%, transparent);
+  --reader-header-height: calc(54px + env(safe-area-inset-top, 0px));
+  --reader-footer-height: calc(50px + env(safe-area-inset-bottom, 0px));
+  --reader-surface: var(--page-bg);
   --reader-border: color-mix(in srgb, var(--page-fg) 10%, transparent);
   --reader-muted: color-mix(in srgb, var(--page-fg) 58%, transparent);
   --reader-track: color-mix(in srgb, var(--page-fg) 18%, transparent);
@@ -1779,27 +1909,50 @@ onBeforeUnmount(() => {
 }
 .reader-header,
 .reader-footer {
-  position: relative;
-  z-index: 3;
+  position: absolute;
+  z-index: 10;
+  right: 0;
+  left: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 18px;
   background: var(--reader-surface);
   border-color: var(--reader-border);
-  -webkit-backdrop-filter: blur(18px) saturate(1.08);
-  backdrop-filter: blur(18px) saturate(1.08);
+  visibility: hidden;
+  pointer-events: none;
+  will-change: transform;
+  transition:
+    transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 0s linear 200ms;
 }
 .reader-header {
+  top: 0;
+  height: var(--reader-header-height);
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
   border-bottom: 1px solid var(--reader-border);
+  transform: translate3d(0, -100%, 0);
 }
 .reader-footer {
-  border-top: 1px solid var(--reader-border);
-  min-height: 50px;
+  bottom: 0;
+  height: var(--reader-footer-height);
   box-sizing: border-box;
   gap: 8px;
   padding-top: 5px;
   padding-bottom: max(5px, env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--reader-border);
+  transform: translate3d(0, 100%, 0);
+}
+.reader-header.visible,
+.reader-footer.visible {
+  visibility: visible;
+  pointer-events: auto;
+  transform: translate3d(0, 0, 0);
+  transition-delay: 0s;
+}
+.reader-footer.visible {
+  transition-duration: 150ms, 0s;
 }
 .reader-tools {
   display: flex;
@@ -1837,11 +1990,11 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 .reader-stage {
-  position: relative;
+  position: absolute;
+  inset: 0;
   min-height: 0;
   overflow: hidden;
   overscroll-behavior: none;
-  padding-bottom: 8px;
   box-sizing: border-box;
 }
 .foliate-view {
@@ -1879,12 +2032,53 @@ onBeforeUnmount(() => {
   border: 0;
   box-shadow: none;
 }
+.reader-menu-edge {
+  position: absolute;
+  z-index: 3;
+  right: 0;
+  left: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.reader-menu-edge-top {
+  top: 0;
+  height: var(--reader-header-height);
+}
+.reader-menu-edge-bottom {
+  bottom: 0;
+  height: var(--reader-footer-height);
+}
+.book-progress {
+  position: absolute;
+  z-index: 11;
+  right: 10px;
+  bottom: max(5px, env(safe-area-inset-bottom, 0px));
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--page-bg) 72%, transparent);
+  color: var(--reader-muted);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0.78;
+  transition: bottom 150ms ease;
+}
+.book-progress.above-footer {
+  bottom: calc(var(--reader-footer-height) + 5px);
+}
 .catalog-panel,
 .settings-panel {
   position: absolute;
-  z-index: 5;
-  top: 54px;
-  bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+  z-index: 20;
+  top: var(--reader-header-height);
+  bottom: var(--reader-footer-height);
   width: min(280px, calc(100vw - 32px));
   overflow: hidden;
   background: var(--page-bg);
@@ -1899,9 +2093,9 @@ onBeforeUnmount(() => {
 .settings-backdrop {
   position: absolute;
   z-index: 4;
-  top: 54px;
+  top: var(--reader-header-height);
   right: 0;
-  bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+  bottom: var(--reader-footer-height);
   left: 0;
   background: transparent;
 }
@@ -1920,15 +2114,15 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .settings-panel {
-  z-index: 5;
+  z-index: 20;
   right: 0;
   padding: 20px;
-  top: calc(54px + 8px);
+  top: calc(var(--reader-header-height) + 8px);
   right: 8px;
   bottom: auto;
   width: min(380px, calc(100vw - 16px));
   max-height: calc(
-    100% - 54px - 58px - env(safe-area-inset-bottom, 0px) - 16px
+    100% - var(--reader-header-height) - var(--reader-footer-height) - 16px
   );
   box-sizing: border-box;
   overflow: auto;
@@ -2069,15 +2263,13 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 680px) {
   .reader-page {
-    grid-template-rows: 48px minmax(0, 1fr) auto;
+    --reader-header-height: calc(48px + env(safe-area-inset-top, 0px));
+    --reader-footer-height: calc(48px + env(safe-area-inset-bottom, 0px));
   }
   .reader-header,
   .reader-footer {
-    padding: 0 8px;
-  }
-  .reader-footer {
-    min-height: 48px;
-    padding-bottom: max(5px, env(safe-area-inset-bottom, 0px));
+    padding-right: 8px;
+    padding-left: 8px;
   }
   .header-title {
     max-width: 44vw;
@@ -2092,23 +2284,23 @@ onBeforeUnmount(() => {
   }
   .catalog-panel,
   .settings-panel {
-    top: 48px;
-    bottom: calc(54px + env(safe-area-inset-bottom, 0px));
+    top: var(--reader-header-height);
+    bottom: var(--reader-footer-height);
   }
   .catalog-panel {
     width: min(280px, calc(100vw - 32px));
   }
   .settings-backdrop {
-    top: 48px;
-    bottom: calc(54px + env(safe-area-inset-bottom, 0px));
+    top: var(--reader-header-height);
+    bottom: var(--reader-footer-height);
   }
   .settings-panel {
-    top: calc(48px + 8px);
+    top: calc(var(--reader-header-height) + 8px);
     right: 8px;
     bottom: auto;
     width: calc(100vw - 16px);
     max-height: calc(
-      100% - 48px - 54px - env(safe-area-inset-bottom, 0px) - 16px
+      100% - var(--reader-header-height) - var(--reader-footer-height) - 16px
     );
     padding: 12px;
   }
@@ -2117,11 +2309,16 @@ onBeforeUnmount(() => {
   }
 }
 .reader-page.night {
-  --reader-surface: rgba(24, 26, 30, 0.96);
   --reader-border: rgba(216, 217, 220, 0.12);
   --reader-muted: rgba(216, 217, 220, 0.62);
   --reader-track: rgba(216, 217, 220, 0.22);
   --reader-accent: #e06a74;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reader-header,
+  .reader-footer {
+    transition: none;
+  }
 }
 @supports (-webkit-touch-callout: none) {
   .reader-page {

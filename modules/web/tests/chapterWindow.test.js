@@ -147,7 +147,7 @@ test('covers the Foliate reader architecture and its navigation contracts', () =
   assert.match(bookChapter, /@touchend="handleClickModeTouchEnd"/)
   assert.match(bookChapter, /const handleClickCellClick =/)
   assert.match(bookChapter, /v-for="area in readClickAreas"/)
-  assert.match(bookChapter, /@click\.stop="handleClickCellClick\(\$event, store\.config\.clickActions\[area\.key\]\)"/)
+  assert.match(bookChapter, /@click\.stop="\s*handleClickCellClick\(\$event, store\.config\.clickActions\[area\.key\]\)\s*"/)
   assert.match(bookChapter, /@pointerdown\.stop/)
   assert.match(bookChapter, /outline: none !important/)
   assert.match(bookChapter, /const commitSeek =/)

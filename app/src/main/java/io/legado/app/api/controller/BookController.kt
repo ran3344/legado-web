@@ -22,6 +22,7 @@ import io.legado.app.model.BookCover
 import io.legado.app.model.ImageProvider
 import io.legado.app.model.ReadBook
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.remote.progressKey
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.GSON
 import io.legado.app.utils.cnCompare
@@ -316,20 +317,28 @@ object BookController {
         GSON.fromJsonObject<BookProgress>(postData)
             .onFailure { it.printOnDebug() }
             .getOrNull()?.let { bookProgress ->
-                appDb.bookDao.getBook(bookProgress.name, bookProgress.author)?.let { book ->
-                    book.durChapterIndex = bookProgress.durChapterIndex
-                    book.durChapterPos = bookProgress.durChapterPos
-                    book.durChapterTitle = bookProgress.durChapterTitle
-                    book.durChapterTime = bookProgress.durChapterTime
-                    AppWebDav.uploadBookProgress(bookProgress) {
-                        book.syncTime = System.currentTimeMillis()
+                val book = bookProgress.bookUrl?.let { appDb.bookDao.getBook(it) }
+                    ?: bookProgress.bookKey?.let { key ->
+                        appDb.bookDao.all.firstOrNull { it.progressKey == key }
                     }
-                    book.update()
-                    ReadBook.book?.let {
-                        if (it.name == bookProgress.name &&
-                            it.author == bookProgress.author
-                        ) {
-                            ReadBook.webBookProgress = bookProgress
+                book?.let {
+                    val resolvedProgress = bookProgress.copy(
+                        name = it.name,
+                        author = it.author,
+                        bookKey = it.progressKey,
+                        bookUrl = it.bookUrl,
+                    )
+                    it.durChapterIndex = resolvedProgress.durChapterIndex
+                    it.durChapterPos = resolvedProgress.durChapterPos
+                    it.durChapterTitle = resolvedProgress.durChapterTitle
+                    it.durChapterTime = resolvedProgress.durChapterTime
+                    AppWebDav.uploadBookProgress(resolvedProgress) {
+                        it.syncTime = System.currentTimeMillis()
+                    }
+                    it.update()
+                    ReadBook.book?.let { readingBook ->
+                        if (readingBook.bookUrl == it.bookUrl) {
+                            ReadBook.webBookProgress = resolvedProgress
                         }
                     }
                     return returnData.setData("")

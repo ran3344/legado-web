@@ -186,6 +186,8 @@ class HttpServer(port: Int) : NanoHTTPD(port) {
             }
             response.addHeader("Access-Control-Allow-Methods", "GET, POST")
             response.addWebHeaders(session.headers["origin"], uri)
+            //书架等内容由设备实时提供, 不允许浏览器/代理缓存
+            response.addHeader("Cache-Control", "no-store")
             if (shouldCloseConnection) {
                 response.closeConnection(true)
             }
@@ -248,6 +250,7 @@ class HttpServer(port: Int) : NanoHTTPD(port) {
             addHeader("Access-Control-Allow-Methods", "GET, POST")
             addHeader("Access-Control-Allow-Headers", "content-type, x-legado-token")
             addWebHeaders(session.headers["origin"], session.uri)
+            addHeader("Cache-Control", "no-store")
         }
     }
 
@@ -309,6 +312,7 @@ class HttpServer(port: Int) : NanoHTTPD(port) {
             addHeader("Access-Control-Allow-Methods", "GET, POST")
             addHeader("Access-Control-Allow-Headers", "content-type, x-legado-token")
             addWebHeaders(origin, uri)
+            addHeader("Cache-Control", "no-store")
         }
     }
 

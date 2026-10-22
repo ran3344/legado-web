@@ -15,7 +15,6 @@ import io.legado.app.help.ConcurrentRateLimiter
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.isLocal
-import io.legado.app.help.book.isSameNameAuthor
 import io.legado.app.help.book.readSimulating
 import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.book.update
@@ -587,7 +586,7 @@ object ReadManga : CoroutineScope by MainScope() {
     }
 
     fun onChapterListUpdated(newBook: Book, loadContent: Boolean = true) {
-        if (newBook.isSameNameAuthor(book)) {
+        if (newBook.bookUrl == book?.bookUrl) {
             book = newBook
             chapterSize = newBook.totalChapterNum
             simulatedChapterSize = newBook.simulatedTotalChapterNum()

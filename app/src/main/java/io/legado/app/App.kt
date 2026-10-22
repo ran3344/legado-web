@@ -141,6 +141,8 @@ class App : Application() {
             }
             //同步 WebDAV 书库(云端有本地没有的补下来, 本地删掉的同步删掉)
             AppWebDav.syncLocalBooksAsync()
+            //每 5 分钟补一次书库同步, 并把新增日志/崩溃日志传到 WebDAV
+            AppWebDav.startPeriodicSync()
             //同步共享书库书架
             if (SharedLibrary.isEnabled) {
                 SharedLibrary.syncLibraryAsync()

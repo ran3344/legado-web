@@ -25,7 +25,19 @@ object DatabaseMigrations {
             migration_39_40, migration_40_41, migration_41_42, migration_42_43,
             migration_100_101, migration_104_105, migration_105_106, migration_106_107,
             migration_107_108, migration_108_109, migration_109_110,
+            migration_111_112,
         )
+    }
+
+    /**
+     * 本地书按文件路径区分，不再用 (name, author) 唯一约束。
+     *
+     * 同名同作者的不同文件必须能同时存在；进度和同步都改用相对路径作为 key。
+     */
+    private val migration_111_112 = object : Migration(111, 112) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("DROP INDEX IF EXISTS index_books_name_author")
+        }
     }
 
     private val migration_109_110 = object : Migration(109, 110) {

@@ -32,7 +32,6 @@ import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isPdf
 import io.legado.app.model.localBook.PdfFile
 import io.legado.app.ui.book.read.page.findPdfPagePosition
-import io.legado.app.help.book.isSameNameAuthor
 import io.legado.app.help.book.isShared
 import io.legado.app.help.book.readSimulating
 import io.legado.app.help.book.simulatedTotalChapterNum
@@ -1949,7 +1948,7 @@ object ReadBook : CoroutineScope by MainScope() {
     }
 
     fun onChapterListUpdated(newBook: Book, loadContent: Boolean = true) {
-        if (newBook.isSameNameAuthor(book)) {
+        if (newBook.bookUrl == book?.bookUrl) {
             val positionAnchor = if (callBack == null) currentPositionAnchor() else null
             book = newBook
             chapterSize = newBook.totalChapterNum

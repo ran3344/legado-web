@@ -4,7 +4,6 @@ import android.os.Parcelable
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Ignore
-import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
@@ -32,10 +31,7 @@ import kotlin.math.max
 
 @Parcelize
 @TypeConverters(Book.Converters::class)
-@Entity(
-    tableName = "books",
-    indices = [Index(value = ["name", "author"], unique = true)]
-)
+@Entity(tableName = "books")
 data class Book(
     // 详情页Url(本地书源存储完整文件路径)
     @PrimaryKey

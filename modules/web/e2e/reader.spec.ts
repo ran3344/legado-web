@@ -15,6 +15,98 @@ import {
 
 const STABLE_OFFSET_DELTA = 4
 
+const dismissReaderMenu = async (page: Page) => {
+  const box = await page.locator('.reader-stage').boundingBox()
+  if (!box) throw new Error('reader stage missing')
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+}
+
+test('覆盖式阅读菜单：点击正文显示，再点空白隐藏，且不改变正文尺寸', async ({
+  page,
+}) => {
+  await openReader(page, 'scroll')
+  await expect(page.locator('.reader-header')).toBeHidden()
+  await expect(page.locator('.reader-footer')).toBeHidden()
+
+  const stage = page.locator('.reader-stage')
+  const sizeBefore = await stage.boundingBox()
+  await stage.click({ position: { x: 10, y: 10 } })
+  await expect(page.locator('.reader-header')).toBeVisible()
+  await expect(page.locator('.reader-footer')).toBeVisible()
+  const sizeAfterOpen = await stage.boundingBox()
+  expect(sizeAfterOpen).toEqual(sizeBefore)
+
+  await dismissReaderMenu(page)
+  await expect(page.locator('.reader-header')).toBeHidden()
+  await expect(page.locator('.reader-footer')).toBeHidden()
+  const sizeAfterClose = await stage.boundingBox()
+  expect(sizeAfterClose).toEqual(sizeBefore)
+})
+
+test('覆盖式阅读菜单：左右翻页模式点击正文呼出且不翻页', async ({
+  page,
+}) => {
+  await openReader(page, 'horizontal')
+  await expect(page.locator('.reader-header')).toBeHidden()
+  await expect(page.locator('.reader-footer')).toBeHidden()
+
+  const stage = page.locator('.reader-stage')
+  const sizeBefore = await stage.boundingBox()
+  const indicatorBefore = await pageIndicator(page)
+  await stage.click({ position: { x: 10, y: 10 } })
+  await expect(page.locator('.reader-header')).toBeVisible()
+  await expect(page.locator('.reader-footer')).toBeVisible()
+  expect(await stage.boundingBox()).toEqual(sizeBefore)
+  expect(await pageIndicator(page)).toEqual(indicatorBefore)
+
+  await dismissReaderMenu(page)
+  await expect(page.locator('.reader-header')).toBeHidden()
+  await expect(page.locator('.reader-footer')).toBeHidden()
+})
+
+test('覆盖式阅读菜单：显示时左右滑动仍可翻页', async ({ page }) => {
+  await openReader(page, 'horizontal')
+  const before = await pageIndicator(page)
+  expect(before).not.toBeNull()
+
+  await page.locator('.reader-stage').click({ position: { x: 10, y: 10 } })
+  await expect(page.locator('.reader-header')).toBeVisible()
+
+  await swipe(page, 'left')
+  await expect
+    .poll(async () => (await pageIndicator(page))?.current)
+    .toBe(before!.current + 1)
+  await expect(page.locator('.reader-header')).toBeVisible()
+})
+
+test('覆盖式阅读菜单：显示时纵向滚动仍可用', async ({ page }) => {
+  await openReader(page, 'scroll')
+  const before = await readerState(page)
+  expect(before).not.toBeNull()
+
+  await page.locator('.reader-stage').click({ position: { x: 10, y: 10 } })
+  await expect(page.locator('.reader-header')).toBeVisible()
+
+  await page.mouse.move(640, 420)
+  await page.mouse.wheel(0, 500)
+  await expect
+    .poll(async () => (await readerState(page))?.start)
+    .toBeGreaterThan(before!.start)
+  await expect(page.locator('.reader-header')).toBeVisible()
+})
+
+test('阅读器底部显示全书进度百分比', async ({ page }) => {
+  await openReader(page, 'scroll')
+  const indicator = page.locator('.book-progress')
+  await expect(indicator).toBeVisible()
+  await expect(indicator).toContainText('全书')
+  await expect(indicator).toContainText(/%/)
+
+  await page.locator('.reader-stage').click({ position: { x: 10, y: 10 } })
+  await expect(page.locator('.reader-header')).toBeVisible()
+  await expect(indicator).toHaveClass(/above-footer/)
+})
+
 test('书架入口：demo 书籍可以打开阅读器', async ({ page }) => {
   await page.goto('/?demo=1')
   const entry = page.locator('.book-entry')
@@ -91,9 +183,7 @@ test('连续滚动：从后章滚回顶部补上前一章，正文不跳动', as
     expect(markerAfter).not.toBeNull()
     expect(
       Math.abs(markerAfter!.viewOffset - markerBefore.viewOffset),
-    ).toBeLessThanOrEqual(
-      STABLE_OFFSET_DELTA,
-    )
+    ).toBeLessThanOrEqual(STABLE_OFFSET_DELTA)
   }
 })
 
@@ -136,9 +226,36 @@ test('点击模式：九宫格左右翻页与中间菜单', async ({ page }) => 
     .poll(async () => (await pageIndicator(page))?.current)
     .toBe(initial!.current)
 
-  // 正中 → 呼出设置菜单
+  // 正中 → 呼出覆盖式阅读菜单
   await page.locator('.click-cell[aria-label="正中"]').click()
-  await expect(page.locator('.settings-panel')).toBeVisible()
+  await expect(page.locator('.reader-header')).toBeVisible()
+  await expect(page.locator('.reader-footer')).toBeVisible()
+
+  // 顶部/底部边缘 → 也能呼出菜单，且不触发翻页
+  await dismissReaderMenu(page)
+  await expect(page.locator('.reader-header')).toBeHidden()
+  const beforeEdgeTap = await pageIndicator(page)
+  await page.locator('.reader-menu-edge-top').click()
+  await expect(page.locator('.reader-header')).toBeVisible()
+  expect(await pageIndicator(page)).toEqual(beforeEdgeTap)
+
+  await dismissReaderMenu(page)
+  await expect(page.locator('.reader-footer')).toBeHidden()
+  await page.locator('.reader-menu-edge-bottom').click()
+  await expect(page.locator('.reader-footer')).toBeVisible()
+  expect(await pageIndicator(page)).toEqual(beforeEdgeTap)
+
+  // 菜单显示时左滑 → 仍然翻页
+  const beforeMenuSwipe = await pageIndicator(page)
+  await swipe(page, 'left')
+  await expect
+    .poll(async () => (await pageIndicator(page))?.current)
+    .toBe(beforeMenuSwipe!.current + 1)
+  await expect(page.locator('.reader-footer')).toBeVisible()
+
+  // 再点底部栏空白处 → 收起菜单
+  await page.locator('.reader-footer').click({ position: { x: 2, y: 2 } })
+  await expect(page.locator('.reader-footer')).toBeHidden()
 })
 
 test('左右翻页：逐页前进不跳页（章节边界回归）', async ({ page }) => {

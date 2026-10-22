@@ -25,6 +25,14 @@
         ><button
           class="icon-button"
           type="button"
+          title="刷新书架"
+          @click="refreshShelf"
+        >
+          <Refresh />
+        </button
+        ><button
+          class="icon-button"
+          type="button"
           :title="viewMode === 'grid' ? '列表视图' : '网格视图'"
           @click="viewMode = viewMode === 'grid' ? 'list' : 'grid'"
         >
@@ -77,7 +85,7 @@
 </template>
 
 <script setup lang="ts">
-import { Reading, Grid, List, Search } from '@element-plus/icons-vue'
+import { Reading, Grid, List, Search, Refresh } from '@element-plus/icons-vue'
 import type { Book } from '@/book'
 import { useBookStore } from '@/store'
 import { demoBook } from '@/features/demo/demoBook'
@@ -86,6 +94,8 @@ const store = useBookStore()
 const router = useRouter()
 const demoMode = ref(new URLSearchParams(location.search).get('demo') === '1')
 const shelfScrollKey = 'legado.web.shelfScrollY'
+const SHELF_REFRESH_INTERVAL = 15_000
+let shelfRefreshTimer: ReturnType<typeof setInterval> | undefined
 const saveShelfScroll = () =>
   sessionStorage.setItem(shelfScrollKey, String(window.scrollY || 0))
 const restoreShelfScroll = async () => {
@@ -196,11 +206,32 @@ const loadShelf = async () => {
     loading.value = false
   }
 }
+const refreshShelf = async () => {
+  if (demoMode.value || document.hidden) return
+  try {
+    await store.loadBookShelf(true)
+  } catch {
+    // 静默刷新失败时保留旧数据，等下一次轮询
+  }
+}
+const refreshShelfWhenVisible = () => {
+  if (!document.hidden) void refreshShelf()
+}
 onMounted(async () => {
   await loadShelf()
   await restoreShelfScroll()
+  if (!demoMode.value) {
+    shelfRefreshTimer = setInterval(() => void refreshShelf(), SHELF_REFRESH_INTERVAL)
+    document.addEventListener('visibilitychange', refreshShelfWhenVisible)
+    window.addEventListener('focus', refreshShelfWhenVisible)
+  }
 })
-onBeforeUnmount(saveShelfScroll)
+onBeforeUnmount(() => {
+  saveShelfScroll()
+  if (shelfRefreshTimer) clearInterval(shelfRefreshTimer)
+  document.removeEventListener('visibilitychange', refreshShelfWhenVisible)
+  window.removeEventListener('focus', refreshShelfWhenVisible)
+})
 </script>
 
 <style scoped>

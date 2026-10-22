@@ -55,9 +55,10 @@ internal fun decideBookSyncAction(
     recordedLocalModify: Long?,
 ): BookSyncAction {
     if (recordedRemoteModify == null && recordedLocalModify == null) {
-        //还没有同步记录(老版本上传的书): 内容一样就不动, 不一样才按修改时间谁新谁赢
+        //还没有同步记录(老版本上传的书): 大小和时间都一样才不动, 否则按修改时间谁新谁赢
+        //只比大小会漏掉"更新后大小恰好没变"的书, 这类更新也必须覆盖旧文件
         return when {
-            localSize == remoteSize -> BookSyncAction.NONE
+            localSize == remoteSize && localModify == remoteModify -> BookSyncAction.NONE
             localModify >= remoteModify -> BookSyncAction.UPLOAD
             else -> BookSyncAction.DOWNLOAD
         }
@@ -126,11 +127,35 @@ internal fun remoteBookUploadFileName(book: Book): String =
     book.remoteFileName()
         ?: if (book.isArchive) book.archiveName else book.originName
 
+/**
+ * 阅读进度使用的稳定书籍键：
+ * - 已绑定 WebDAV 的书使用远端相对路径/文件名；
+ * - 本地尚未上传的书使用自己的 bookUrl，避免同名同作者互相串进度。
+ *
+ * 书名和作者只用于展示，同名同作者的不同文件必须各自保存进度。
+ */
+internal val Book.progressKey: String
+    get() = remoteFileName()?.trim()?.takeIf { it.isNotEmpty() }
+        ?: bookUrl.trim().ifBlank { originName.trim() }
+
 /** origin 中记录的远端文件名, 非 WebDAV 书籍返回 null */
 internal fun Book.remoteFileName(): String? {
     if (!origin.startsWith(BookType.webDavTag)) return null
     val attribute = CustomUrl(origin.substring(BookType.webDavTag.length)).getAttr()
     return (attribute[REMOTE_FILE_NAME_ATTRIBUTE] as? String)?.takeIf { it.isNotBlank() }
+}
+
+/**
+ * 把本地书绑定到云端同名文件
+ *
+ * 绑定后再写 [setRemoteSyncState] 才会生效, 否则 origin 仍是 local, 下次同步会把
+ * 这本书当成"没有同步记录", 既判断不准更新方向, 也不会跟随云端删除。
+ */
+internal fun Book.applyRemoteBinding(remoteBook: RemoteBook, serverID: Long?) {
+    origin = BookType.webDavTag + CustomUrl(remoteBook.path)
+        .putAttribute("serverID", serverID)
+        .putAttribute(REMOTE_FILE_NAME_ATTRIBUTE, remoteBook.filename)
+        .toString()
 }
 
 class RemoteBookWebDav(

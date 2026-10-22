@@ -111,6 +111,7 @@
           </select>
         </label>
       </div>
+      <p class="click-hint">点击屏幕顶部或底部可显示/隐藏菜单</p>
     </div>
   </section>
 </template>
@@ -249,6 +250,11 @@ const resetClickActions = () => {
   padding: 5px;
   border: 1px solid rgba(128, 128, 128, 0.26);
   border-radius: 7px;
+}
+.click-hint {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 11px;
 }
 .click-cell {
   display: grid;

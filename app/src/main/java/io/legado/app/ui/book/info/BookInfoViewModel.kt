@@ -26,7 +26,6 @@ import io.legado.app.help.book.getExportFileName
 import io.legado.app.help.book.getRemoteUrl
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.isNotShelf
-import io.legado.app.help.book.isSameNameAuthor
 import io.legado.app.help.book.isShared
 import io.legado.app.help.book.isWebFile
 import io.legado.app.help.book.removeType
@@ -119,11 +118,6 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             val name = intent.getStringExtra("name") ?: ""
             val author = intent.getStringExtra("author") ?: ""
             val bookUrl = intent.getStringExtra("bookUrl") ?: ""
-            appDb.bookDao.getBook(name, author)?.let {
-                inBookshelf = !it.isNotShelf
-                upBook(it)
-                return@execute
-            }
             if (bookUrl.isNotBlank()) {
                 appDb.bookDao.getBook(bookUrl)?.let {
                     inBookshelf = !it.isNotShelf
@@ -134,6 +128,11 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                     upBook(it)
                     return@execute
                 }
+            }
+            appDb.bookDao.getBook(name, author)?.let {
+                inBookshelf = !it.isNotShelf
+                upBook(it)
+                return@execute
             }
             appDb.searchBookDao.getFirstByNameAuthor(name, author)?.toBook()?.let {
                 upBook(it)
@@ -148,11 +147,13 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
 
     fun upBook(intent: Intent) {
         execute {
-            val name = intent.getStringExtra("name") ?: ""
-            val author = intent.getStringExtra("author") ?: ""
-            appDb.bookDao.getBook(name, author)?.let { book ->
-                upBook(book)
-            }
+            val bookUrl = intent.getStringExtra("bookUrl") ?: ""
+            val book = bookUrl.takeIf { it.isNotBlank() }?.let(appDb.bookDao::getBook)
+                ?: appDb.bookDao.getBook(
+                    intent.getStringExtra("name") ?: "",
+                    intent.getStringExtra("author") ?: "",
+                )
+            book?.let(::upBook)
         }
     }
 
@@ -250,7 +251,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             WebBook.getBookInfo(scope, bookSource, book, canReName = canReName)
                 .onSuccess(IO) {
                     var persistedBook = oldBook
-                    val dbBook = appDb.bookDao.getBook(book.name, book.author)
+                    val dbBook = appDb.bookDao.getBook(book.bookUrl)
                     if (!inBookshelf && dbBook != null && !dbBook.isNotShelf && dbBook.origin == book.origin) {
                         /**
                          * book 来自搜索时(inBookshelf == false)，搜索的书名不存在于书架，但是加载详情后，书名更新，存在同名书籍
@@ -506,7 +507,7 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             if (book.order == 0) {
                 book.order = appDb.bookDao.minOrder - 1
             }
-            appDb.bookDao.getBook(book.name, book.author)?.let {
+            appDb.bookDao.getBook(book.bookUrl)?.let {
                 book.durChapterIndex = it.durChapterIndex
                 book.durChapterPos = it.durChapterPos
                 book.durChapterTitle = it.durChapterTitle
@@ -516,9 +517,9 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
             } else {
                 book.save()
             }
-            if (ReadBook.book?.isSameNameAuthor(book) == true) {
+            if (ReadBook.book?.bookUrl == book.bookUrl) {
                 ReadBook.book = book
-            } else if (AudioPlay.book?.isSameNameAuthor(book) == true) {
+            } else if (AudioPlay.book?.bookUrl == book.bookUrl) {
                 AudioPlay.book = book
             }
         }.onSuccess {
@@ -543,14 +544,14 @@ class BookInfoViewModel(application: Application) : BaseViewModel(application) {
                 if (book.order == 0) {
                     book.order = appDb.bookDao.minOrder - 1
                 }
-                appDb.bookDao.getBook(book.name, book.author)?.let {
+                appDb.bookDao.getBook(book.bookUrl)?.let {
                     book.durChapterIndex = it.durChapterIndex
                     book.durChapterPos = it.durChapterPos
                     book.durChapterTitle = it.durChapterTitle
                 }
-                if (ReadBook.book?.isSameNameAuthor(book) == true) {
+                if (ReadBook.book?.bookUrl == book.bookUrl) {
                     ReadBook.book = book
-                } else if (AudioPlay.book?.isSameNameAuthor(book) == true) {
+                } else if (AudioPlay.book?.bookUrl == book.bookUrl) {
                     AudioPlay.book = book
                 }
                 book.save()

@@ -215,6 +215,8 @@ object PreferKey {
     const val webDavBookAutoDelete = "webDavBookAutoDelete"
     const val webDavBookAutoSync = "webDavBookAutoSync"
     const val webDavBookPendingDeletes = "webDavBookPendingDeletes"
+    const val webDavLogAutoSync = "webDavLogAutoSync"
+    const val webDavLogFileStates = "webDavLogFileStates"
     const val webServiceWakeLock = "webServiceWakeLock"
     const val sharedLibraryEnabled = "sharedLibraryEnabled"
     const val sharedLibraryUrl = "sharedLibraryUrl"

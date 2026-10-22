@@ -1,7 +1,9 @@
 package io.legado.app.help
 
 import android.net.Uri
+import android.os.Build
 import io.legado.app.R
+import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
 import io.legado.app.constant.PreferKey
@@ -22,27 +24,33 @@ import io.legado.app.lib.webdav.WebDavException
 import io.legado.app.lib.webdav.WebDavFile
 import io.legado.app.lib.webdav.isWebDavNotFound
 import io.legado.app.lib.webdav.isWebDavOverwriteConflict
-import io.legado.app.model.analyzeRule.CustomUrl
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.localBook.findExactRemoteBook
 import io.legado.app.model.localBook.localFileState
 import io.legado.app.model.localBook.safeLocalFileName
 import io.legado.app.model.remote.RemoteBook
 import io.legado.app.model.remote.BookSyncAction
-import io.legado.app.model.remote.REMOTE_FILE_NAME_ATTRIBUTE
 import io.legado.app.model.remote.RemoteBookWebDav
+import io.legado.app.model.remote.WebDavLogFile
+import io.legado.app.model.remote.applyRemoteBinding
 import io.legado.app.model.remote.decideBookSyncAction
+import io.legado.app.model.remote.filterNonEmptyLogFiles
+import io.legado.app.model.remote.pendingLogUploads
+import io.legado.app.model.remote.progressKey
 import io.legado.app.model.remote.recordedLocalModify
 import io.legado.app.model.remote.recordedRemoteModify
 import io.legado.app.model.remote.recordedRemoteSize
+import io.legado.app.model.remote.retainExistingLogStates
 import io.legado.app.model.remote.setRemoteSyncState
 import io.legado.app.model.remote.remoteBookUploadFileName
 import io.legado.app.utils.AlphanumComparator
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
+import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.UrlUtil
 import io.legado.app.utils.fromJsonObject
+import io.legado.app.utils.getPrefBoolean
 import io.legado.app.utils.getPrefString
 import io.legado.app.utils.getPrefStringSet
 import io.legado.app.utils.isJson
@@ -54,9 +62,12 @@ import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.Dispatchers.Main
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import splitties.init.appCtx
 import java.io.File
@@ -72,6 +83,15 @@ object AppWebDav {
      */
     private const val REMOTE_LIST_TRUNCATE_THRESHOLD = 700
 
+    /** 定时同步书库和日志的间隔 */
+    private const val PERIODIC_SYNC_INTERVAL_MS = 5 * 60 * 1000L
+
+    /** 启动后稍等再传日志, 避免和启动初始化抢网络 */
+    private const val PERIODIC_SYNC_START_DELAY_MS = 10 * 1000L
+
+    /** 启动时没网导致 WebDAV 没初始化成功时, 定时重试配置的间隔 */
+    private const val CONFIG_RETRY_INTERVAL_MS = 30 * 60 * 1000L
+
     /**
      * 一次书库同步的结果, 用于给下拉刷新等手动入口提示具体原因
      *
@@ -82,9 +102,17 @@ object AppWebDav {
     }
 
     private val syncLock = Mutex()
+    private val logSyncLock = Mutex()
     private val bookProgressUrl get() = "${rootWebDavUrl}bookProgress/"
     private val exportsWebDavUrl get() = "${rootWebDavUrl}books/"
     private val bgWebDavUrl get() = "${rootWebDavUrl}background/"
+    private val logsWebDavUrl get() = "${rootWebDavUrl}logs/"
+
+    @Volatile
+    private var periodicSyncStarted = false
+
+    @Volatile
+    private var lastConfigRetryAt = 0L
 
     var authorization: Authorization? = null
         private set
@@ -152,6 +180,7 @@ object AppWebDav {
                 WebDav(bookProgressUrl, mAuthorization).makeAsDir()
                 WebDav(exportsWebDavUrl, mAuthorization).makeAsDir()
                 WebDav(bgWebDavUrl, mAuthorization).makeAsDir()
+                WebDav(logsWebDavUrl, mAuthorization).makeAsDir()
                 val rootBooksUrl = "${rootWebDavUrl}books/"
                 defaultBookWebDav = RemoteBookWebDav(rootBooksUrl, mAuthorization)
                 authorization = mAuthorization
@@ -319,8 +348,9 @@ object AppWebDav {
         if (!NetworkUtils.isAvailable()) return
         try {
             val bookProgress = BookProgress(book)
+            val bookKey = bookProgress.bookKey ?: return
             val json = GSON.toJson(bookProgress)
-            val url = getProgressUrl(book.name, book.author)
+            val url = getProgressUrl(bookKey)
             WebDav(url, authorization).upload(json.toByteArray(), "application/json")
             book.syncTime = System.currentTimeMillis()
             onSuccess?.invoke()
@@ -335,8 +365,9 @@ object AppWebDav {
             val authorization = authorization ?: return
             if (!AppConfig.syncBookProgress) return
             if (!NetworkUtils.isAvailable()) return
+            val bookKey = bookProgress.bookKey ?: return
             val json = GSON.toJson(bookProgress)
-            val url = getProgressUrl(bookProgress.name, bookProgress.author)
+            val url = getProgressUrl(bookKey)
             WebDav(url, authorization).upload(json.toByteArray(), "application/json")
             onSuccess?.invoke()
         } catch (e: Exception) {
@@ -345,25 +376,30 @@ object AppWebDav {
         }
     }
 
-    private fun getProgressUrl(name: String, author: String): String {
-        return bookProgressUrl + getProgressFileName(name, author)
+    private fun getProgressUrl(bookKey: String): String {
+        return bookProgressUrl + getProgressFileName(bookKey)
     }
 
-    private fun getProgressFileName(name: String, author: String): String {
-        return UrlUtil.replaceReservedChar("${name}_${author}".normalizeFileName()) + ".json"
+    /**
+     * 进度文件名只由书库里的文件路径决定，书名/作者变化或增删章节都不会影响它。
+     */
+    private fun getProgressFileName(bookKey: String): String {
+        return MD5Utils.md5Encode16(bookKey) + ".json"
     }
 
     /**
      * 获取书籍进度
      */
     suspend fun getBookProgress(book: Book): BookProgress? {
-        val url = getProgressUrl(book.name, book.author)
+        val bookKey = book.progressKey
+        val url = getProgressUrl(bookKey)
         kotlin.runCatching {
             val authorization = authorization ?: return null
             WebDav(url, authorization).download().let { byteArray ->
                 val json = String(byteArray)
                 if (json.isJson()) {
                     return GSON.fromJsonObject<BookProgress>(json).getOrNull()
+                        ?.takeIf { it.bookKey == bookKey }
                 }
             }
         }.onFailure {
@@ -385,17 +421,20 @@ object AppWebDav {
             map[it.displayName] = it
         }
         appDb.bookDao.all.forEach { book ->
-            val progressFileName = getProgressFileName(book.name, book.author)
+            val bookKey = book.progressKey
+            val progressFileName = getProgressFileName(bookKey)
             val webDavFile = map[progressFileName] ?: return@forEach
             if (webDavFile.lastModify <= book.syncTime) {
                 //本地同步时间大于上传时间不用同步
                 return@forEach
             }
             getBookProgress(book)?.let { bookProgress ->
-                if (bookProgress.durChapterIndex > book.durChapterIndex
-                    || (bookProgress.durChapterIndex == book.durChapterIndex
-                            && bookProgress.durChapterPos > book.durChapterPos)
-                ) {
+                val newer = bookProgress.durChapterTime > book.durChapterTime ||
+                        (bookProgress.durChapterTime == book.durChapterTime
+                                && (bookProgress.durChapterIndex > book.durChapterIndex
+                                || (bookProgress.durChapterIndex == book.durChapterIndex
+                                && bookProgress.durChapterPos > book.durChapterPos)))
+                if (newer) {
                     book.durChapterIndex = bookProgress.durChapterIndex
                     book.durChapterPos = bookProgress.durChapterPos
                     book.durChapterTitle = bookProgress.durChapterTitle
@@ -420,11 +459,14 @@ object AppWebDav {
             val bookWebDav = defaultBookWebDav ?: return@async
             val localBooks = books.filter { it.isLocal }
             if (localBooks.isEmpty()) return@async
-            // 先把云端目录列一次: 云端已有同一本书时不能再走条件上传, 那样必然 412
-            val remoteBooks = kotlin.runCatching {
-                withContext(IO) { bookWebDav.getRemoteBookList(bookWebDav.rootBookUrl) }
-            }.getOrNull()
-            localBooks.forEach { autoUploadImportedBook(bookWebDav, it, remoteBooks) }
+            // 和定时双向同步串行, 避免刚导入的书被"云端没有"判定后重复下载/删除
+            syncLock.withLock {
+                // 先把云端目录列一次: 云端已有同一本书时不能再走条件上传, 那样必然 412
+                val remoteBooks = kotlin.runCatching {
+                    withContext(IO) { bookWebDav.getRemoteBookList(bookWebDav.rootBookUrl) }
+                }.getOrNull()
+                localBooks.forEach { autoUploadImportedBook(bookWebDav, it, remoteBooks) }
+            }
         }
     }
 
@@ -471,10 +513,7 @@ object AppWebDav {
     ) {
         //要先判定再写同步状态, 否则刚写下的状态会让这次比较变成"没有变化"
         val action = if (book.isArchive) BookSyncAction.NONE else book.syncAction(remoteBook)
-        book.origin = BookType.webDavTag + CustomUrl(remoteBook.path)
-            .putAttribute("serverID", bookWebDav.serverID)
-            .putAttribute(REMOTE_FILE_NAME_ATTRIBUTE, remoteBook.filename)
-            .toString()
+        book.applyRemoteBinding(remoteBook, bookWebDav.serverID)
         book.setRemoteSyncState(
             remoteName = remoteBook.filename,
             remoteSize = remoteBook.size,
@@ -563,6 +602,7 @@ object AppWebDav {
                 val localBookMap = localBooks
                     .mapNotNull { book -> book.syncFileName()?.let { it to book } }
                     .groupBy({ it.first }, { it.second })
+                    .mapValuesTo(mutableMapOf()) { it.value.toMutableList() }
                 // 1. 云端有本地没有 -> 下载; 两边都有 -> 按修改时间谁新谁赢
                 remoteBookMap.values.forEach { remoteBook ->
                     if (remoteBook.filename in pendingDeletes) return@forEach
@@ -596,7 +636,11 @@ object AppWebDav {
                         }
                     }
                     kotlin.runCatching {
-                        downloadRemoteBookToShelf(bookWebDav, remoteBook, localBook)
+                        downloadRemoteBookToShelf(
+                            bookWebDav,
+                            remoteBook,
+                            localBook,
+                        )
                     }.onSuccess {
                         // 同名但路径已失效的旧记录要清掉, 否则书架出现重复条目并反复重新下载
                         matchedBooks?.filterNot { it.localFileExists() }
@@ -729,6 +773,8 @@ object AppWebDav {
         // 书架上已经有这本书时原地覆盖, 另存一份会多出一条同名记录
         if (existing != null && bookWebDav.overwriteRemoteBook(remoteBook, existing)) {
             resetLocalBookAfterOverwrite(existing)
+            // 本地导入的同名书也要绑定到 WebDAV, 否则下面的同步状态写不进去
+            existing.applyRemoteBinding(remoteBook, bookWebDav.serverID)
             existing.setRemoteSyncState(
                 remoteName = remoteBook.filename,
                 remoteSize = remoteBook.size,
@@ -739,11 +785,10 @@ object AppWebDav {
             return
         }
         val uri = bookWebDav.downloadRemoteBook(remoteBook)
+        // 云端文件路径就是身份：文件名不同就是不同的书，即使书名、作者相同。
+        // 只有远端文件名和本地一致（上面的 existing）才原地覆盖。
         LocalBook.importFiles(uri).forEach { book ->
-            book.origin = BookType.webDavTag + CustomUrl(remoteBook.path)
-                .putAttribute("serverID", bookWebDav.serverID)
-                .putAttribute(REMOTE_FILE_NAME_ATTRIBUTE, remoteBook.filename)
-                .toString()
+            book.applyRemoteBinding(remoteBook, bookWebDav.serverID)
             book.setRemoteSyncState(
                 remoteName = remoteBook.filename,
                 remoteSize = remoteBook.size,
@@ -841,6 +886,113 @@ object AppWebDav {
         if (pending.remove(fileName)) {
             appCtx.putPrefStringSet(PreferKey.webDavBookPendingDeletes, pending)
         }
+    }
+
+    /**
+     * 启动周期同步: 每 5 分钟同步一次书库和日志
+     *
+     * 书库只在已经配置成功时执行, 避免授权失败时每轮都弹 toast;
+     * 配置失败由启动同步和手动下拉刷新负责重试。
+     */
+    fun startPeriodicSync() {
+        if (periodicSyncStarted) return
+        periodicSyncStarted = true
+        Coroutine.async {
+            delay(PERIODIC_SYNC_START_DELAY_MS)
+            while (isActive) {
+                if (NetworkUtils.isAvailable() && authorization == null) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastConfigRetryAt >= CONFIG_RETRY_INTERVAL_MS) {
+                        lastConfigRetryAt = now
+                        runCatching { upConfig() }
+                    }
+                }
+                runCatching { syncLogs() }
+                    .onFailure {
+                        currentCoroutineContext().ensureActive()
+                        AppLog.put("定时上传日志到WebDAV失败\n${it.localizedMessage}", it)
+                    }
+                if (AppConfig.webDavBookAutoSync && defaultBookWebDav != null) {
+                    runCatching { syncLocalBooks() }
+                        .onFailure {
+                            currentCoroutineContext().ensureActive()
+                            AppLog.put("定时同步WebDAV书库失败\n${it.localizedMessage}", it)
+                        }
+                }
+                delay(PERIODIC_SYNC_INTERVAL_MS)
+            }
+        }
+    }
+
+    /**
+     * 上传应用日志和崩溃日志到 WebDAV 的 logs/<设备>/ 目录
+     *
+     * 只传新增或变化过的文件, 传完记下大小/修改时间, 避免每轮重复上传整份日志。
+     */
+    suspend fun syncLogs(): Boolean {
+        if (!appCtx.getPrefBoolean(PreferKey.webDavLogAutoSync, true)) return false
+        if (!NetworkUtils.isAvailable()) return false
+        if (!logSyncLock.tryLock()) return false
+        try {
+            val auth = authorization ?: return false
+            val files = collectLogFiles()
+            if (files.isEmpty()) return true
+            val logFiles = files.map {
+                WebDavLogFile(it.name, it.length(), it.lastModified())
+            }
+            return withContext(IO) {
+                WebDav(logsWebDavUrl, auth).makeAsDir()
+                val deviceUrl = deviceLogsUrl()
+                WebDav(deviceUrl, auth).makeAsDir()
+                val uploaded = appCtx.getPrefStringSet(PreferKey.webDavLogFileStates)
+                    ?.toSet() ?: emptySet()
+                val states = retainExistingLogStates(logFiles, uploaded).toMutableSet()
+                val byName = files.associateBy { it.name }
+                pendingLogUploads(logFiles, uploaded).forEach { logFile ->
+                    val file = byName[logFile.name] ?: return@forEach
+                    kotlin.runCatching {
+                        WebDav(deviceUrl + UrlUtil.replaceReservedChar(file.name), auth)
+                            .upload(file, "text/plain; charset=utf-8")
+                    }.onSuccess {
+                        states += logFile.stateKey
+                    }.onFailure {
+                        currentCoroutineContext().ensureActive()
+                        AppLog.put("上传日志<${file.name}>到WebDAV失败\n${it.localizedMessage}", it)
+                    }
+                }
+                appCtx.putPrefStringSet(PreferKey.webDavLogFileStates, states)
+                true
+            }
+        } finally {
+            logSyncLock.unlock()
+        }
+    }
+
+    private fun collectLogFiles(): List<File> {
+        val root = appCtx.externalCacheDir ?: return emptyList()
+        val appLogs = File(root, "logs").listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".txt") }
+            .orEmpty()
+        val crashLogs = File(root, "crash").listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".log") }
+            .orEmpty()
+        return filterNonEmptyLogFiles(appLogs + crashLogs).sortedBy { it.name }
+    }
+
+    /**
+     * 每台设备一个子目录, 避免多台设备互相覆盖同名日志
+     *
+     * 设备名可能重复, 追加 Android ID 的哈希做区分。
+     */
+    private fun deviceLogsUrl(): String {
+        val name = AppConfig.webDavDeviceName
+            ?.normalizeFileName()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: Build.MODEL
+        val deviceHash = MD5Utils.md5Encode16(AppConst.androidId).take(8)
+        val folder = UrlUtil.replaceReservedChar("${name.ifBlank { "device" }}-$deviceHash")
+        return "$logsWebDavUrl$folder/"
     }
 
 }

@@ -90,7 +90,12 @@ export type BookProgress = Pick<
   | 'durChapterPos'
   | 'durChapterTime'
   | 'durChapterTitle'
->
+> & {
+  /** 书库里的相对路径/文件名，跨设备同步进度的唯一键。 */
+  bookKey?: string
+  /** 当前客户端自己的书籍地址，服务端按它精确定位书籍。 */
+  bookUrl?: string
+}
 
 export type BookChapter = {
   url: string // 章节地址

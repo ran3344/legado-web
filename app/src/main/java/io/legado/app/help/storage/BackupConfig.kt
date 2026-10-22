@@ -112,6 +112,8 @@ object BackupConfig {
         PreferKey.webDavBookAutoDelete,
         PreferKey.webDavBookAutoSync,
         PreferKey.webDavBookPendingDeletes,
+        PreferKey.webDavLogAutoSync,
+        PreferKey.webDavLogFileStates,
         PreferKey.autoBackup,
         PreferKey.jsSourceApiToken,
         PreferKey.launcherIcon,
