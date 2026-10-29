@@ -1118,7 +1118,7 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
             appCtx.putPrefBoolean(PreferKey.welcomeShowIconDark, value)
         }
 
-    val autoUpdateVariant get() = appCtx.getPrefBoolean("autoUpdateVariant", true)
+    val autoUpdateVariant get() = appCtx.getPrefBoolean("autoUpdateVariant", false)
 }
 
 internal fun normalizeJsSourceApiToken(value: String?): String? {
