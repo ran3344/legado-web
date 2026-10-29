@@ -93,6 +93,8 @@ const getBoundingClientRect = target => {
 }
 
 const getVisibleRange = (doc, start, end, mapRect) => {
+    // the document may be empty or swapped out mid-render
+    if (!doc?.body) return null
     // first get all visible nodes
     const acceptNode = node => {
         const name = node.localName?.toLowerCase()
@@ -298,7 +300,11 @@ class View {
         })
     }
     render(layout) {
-        if (!layout) return
+        // The iframe document is momentarily absent while a new section is
+        // being loaded; a dynamic re-render (setting change, resize) fired in
+        // that window used to throw on `document.body` and abort the layout,
+        // leaving the previous geometry on screen.
+        if (!layout || !this.document?.body) return
         // The document can grow while a Legado chapter is prefetched. Keep
         // the measurement range anchored to the current body contents so the
         // paginator recalculates the newly available columns.
@@ -1006,6 +1012,7 @@ export class Paginator extends HTMLElement {
         await this.#scrollToPage(newPage + 1, reason)
     }
     #getVisibleRange() {
+        if (!this.#view?.document?.body) return null
         if (this.scrolled) return getVisibleRange(this.#view.document,
             this.start + this.#margin, this.end - this.#margin, this.#getRectMapper())
         const size = this.#rtl ? -this.size : this.size
@@ -1014,6 +1021,7 @@ export class Paginator extends HTMLElement {
     }
     #afterScroll(reason) {
         const range = this.#getVisibleRange()
+        if (!range) return
         this.#lastVisibleRange = range
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
@@ -1145,7 +1153,9 @@ export class Paginator extends HTMLElement {
         return this.#turnPage(1, distance)
     }
     #getContentEndPage() {
-        if (this.scrolled || !this.#view?.document)
+        // `document.body` is momentarily absent while a section is loading;
+        // `createTreeWalker(null)` throws and surfaces as an unhandled rejection.
+        if (this.scrolled || !this.#view?.document?.body)
             return Math.max(this.pages - 2, 1)
         const walker = this.#view.document.createTreeWalker(
             this.#view.document.body, NodeFilter.SHOW_TEXT)

@@ -624,6 +624,7 @@ const pageStyle = computed(() => {
   const colors = getReaderColors(store.config.theme)
   return { '--page-bg': colors.background, '--page-fg': colors.foreground }
 })
+let appliedInsetY = -1
 const applyReaderConfig = () => {
   const renderer = viewElement.value?.renderer
   if (!renderer) return
@@ -631,22 +632,35 @@ const applyReaderConfig = () => {
   renderer.toggleAttribute('animated', store.config.readMode !== 'scroll')
   renderer.setAttribute('max-column-count', '1')
   const inlineSize = readerStage.value?.clientWidth
+  const blockSize = readerStage.value?.clientHeight || 0
   // 页边距（左右）通过 max-inline-size 收窄内容列宽实现：网格会把收窄后的
   // 列居中，两侧留出对称空白；比 body padding 更可靠（分栏模式下 body
   // padding 只影响首尾页）。
   const marginCfg = store.config.margin || { top: 16, right: 16, bottom: 16, left: 16 }
+  const flow = getReaderFlow(store.config.readMode)
+  // 分栏翻页（左右翻页 / 点击翻页）里 column 高度就是版心高度：不留上下边距时
+  // 每页最后一行的字形会被视口底边裁掉半截，看起来就是"没对齐"。滚动模式靠
+  // 滚动天然有留白，所以只有翻页模式需要这一步。foliate 的 grid 把 `margin`
+  // 当作上下两行的最小高度，因此 max-block-size 必须同步收窄 2*insetY，否则
+  // 两行加起来超过视口高度，反而会互相挤压导致文字重叠。
+  const insetY =
+    flow === 'scrolled'
+      ? 0
+      : Math.max(0, Math.min(Math.max(marginCfg.top ?? 16, marginCfg.bottom ?? 16), 160))
   if (inlineSize) {
     const inset = Math.max(0, Math.min(marginCfg.left, 200))
     renderer.setAttribute('max-inline-size', `${Math.max(inlineSize - inset * 2, 200)}px`)
   }
-  renderer.setAttribute(
-    'max-block-size',
-    `${Math.max(readerStage.value?.clientHeight || 0, 320)}px`,
-  )
-  // foliate 翻页模式：margin 属性必须保持 '0px'（非 0 会形成上下边距带并
-  // 干扰分栏，导致文字重叠）。滚动模式：margin 值映射为左右内边距。
-  renderer.setAttribute('margin', '0px')
+  renderer.setAttribute('max-block-size', `${Math.max(blockSize - insetY * 2, 320)}px`)
+  // margin 与上面的 max-block-size 是一对：两者相加才等于视口高度。
+  renderer.setAttribute('margin', `${insetY}px`)
   renderer.setAttribute('gap', '0%')
+  // `margin` / `max-block-size` 只改 CSS 变量，foliate 不会自己重排；
+  // 只有数值真的变化时才主动 render 一次，避免每次配置变更多排一遍。
+  if (insetY !== appliedInsetY) {
+    appliedInsetY = insetY
+    renderer.render()
+  }
   // 左右页边距统一只经由上面那个 max-inline-size 收窄内容列宽实现，
   // 不能再额外叠加 body 水平 padding：两处同时生效会双重内缩，且分栏
   // 模式下 padding 只影响可视列的起点，导致左右留白不对称（预览与刷新
