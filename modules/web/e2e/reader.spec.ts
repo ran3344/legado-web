@@ -498,3 +498,26 @@ for (const mode of ['scroll', 'horizontal'] as const) {
     expect(bigger!.pages).not.toBe(after!.pages)
   })
 }
+
+test('阅读设置顶部显示书名，点击后可编辑', async ({ page }) => {
+  await openReader(page, 'scroll')
+  await openReaderMenu(page)
+  await page.locator('.reader-tools button[title="阅读设置"]').click()
+
+  const titleButton = page.locator('.settings-panel .book-title-button')
+  await expect(titleButton).toBeVisible()
+  await expect(titleButton).toHaveText('Foliate 阅读体验')
+
+  await titleButton.click()
+  const input = page.locator('.settings-panel .book-title-input')
+  await expect(input).toBeVisible()
+  await expect(input).toHaveValue('Foliate 阅读体验')
+  await expect(input).toBeFocused()
+
+  // Esc 取消：不提交、不跳转，书名保持原样
+  await input.fill('改个名字')
+  await input.press('Escape')
+  await expect(page.locator('.settings-panel .book-title-button')).toHaveText(
+    'Foliate 阅读体验',
+  )
+})

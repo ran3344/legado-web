@@ -1,6 +1,27 @@
 <template>
   <section class="reader-settings" aria-label="阅读设置">
     <div class="lan-reset-row">
+      <button
+        v-if="!renaming"
+        type="button"
+        class="book-title-button"
+        title="点击修改书名"
+        @click="startRename"
+      >
+        {{ bookTitle }}
+      </button>
+      <input
+        v-else
+        ref="renameInput"
+        v-model="renameDraft"
+        class="book-title-input"
+        type="text"
+        maxlength="120"
+        aria-label="书名"
+        @keydown.enter.prevent="commitRename"
+        @keydown.esc.prevent="cancelRename"
+        @blur="commitRename"
+      />
       <button type="button" class="reset-button" @click="resetAllSettings">
         恢复默认
       </button>
@@ -148,75 +169,81 @@
       </div>
     </div>
     </details>
-    <div v-if="store.config.readMode === 'click'" class="click-config">
-      <div class="click-config-heading">
-        <span class="settings-label">点击区域</span>
-        <button type="button" class="mode-button" @click="clickAreaOpen = true">
-          配置点击区域
-        </button>
-      </div>
-    </div>
-    <Teleport to="body">
-      <div
-        v-if="clickAreaOpen"
-        class="lan-click-overlay"
-        @click.self="clickAreaOpen = false"
-      >
-        <div class="lan-click-modal">
-          <div class="lan-click-head">
-            <strong>点击区域</strong>
-            <button
-              type="button"
-              class="lan-click-close"
-              @click="clickAreaOpen = false"
-            >
-              ✕
-            </button>
-          </div>
-          <p class="click-hint">点击屏幕对应区域时显示或隐藏菜单</p>
-          <div class="click-grid" aria-label="九宫格点击区域">
-            <label
-              v-for="area in clickAreas"
-              :key="area.key"
-              class="click-cell"
-            >
-              <span>{{ area.label }}</span>
-              <select v-model="store.config.clickActions[area.key]">
-                <option
-                  v-for="option in clickActionOptions"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </option>
-              </select>
-            </label>
-          </div>
-          <div class="lan-click-foot">
-            <button type="button" class="reset-button" @click="resetClickActions">
-              恢复默认
-            </button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
   </section>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
+import API from '@api'
 import { useBookStore } from '@/store'
-import {
-  defaultReadClickActions,
-  readClickActionOptions,
-  readClickAreas,
-} from '@/config/readClickActions'
+import { defaultReadClickActions } from '@/config/readClickActions'
 
 const store = useBookStore()
-const clickAreaOpen = ref(false)
-function resetClickActions() {
-  store.config.clickActions = { ...defaultReadClickActions }
+const bookTitle = computed(() => store.readingBook.name || '未命名')
+const renaming = ref(false)
+const renameDraft = ref('')
+const renameInput = ref<HTMLInputElement | null>(null)
+
+const startRename = async () => {
+  if (renaming.value) return
+  renameDraft.value = store.readingBook.name || ''
+  renaming.value = true
+  await nextTick()
+  renameInput.value?.focus()
+  renameInput.value?.select()
 }
+
+const cancelRename = () => {
+  renaming.value = false
+  renameDraft.value = ''
+}
+
+/**
+ * 改书名。远程书库（局域网/WebDAV 目录）里 rename 会真改文件名并返回新的
+ * bookUrl，所以改完必须按新地址重新载入；App 内置后端只更新书名，地址不变。
+ */
+const commitRename = async () => {
+  if (!renaming.value) return
+  const name = renameDraft.value.trim()
+  const bookUrl = store.readingBook.bookUrl || ''
+  renaming.value = false
+  renameDraft.value = ''
+  if (!name || !bookUrl || name === (store.readingBook.name || '')) return
+  // 演示书籍是前端内置数据，改不了名字
+  if (bookUrl.startsWith('demo:')) return
+  const shelfBook = store.shelf.find(item => item.bookUrl === bookUrl)
+  try {
+    const response = await API.saveBook({ ...(shelfBook ?? store.readingBook), name })
+    const { isSuccess, data, errorMsg } = response.data
+    if (!isSuccess) {
+      ElMessage.error(errorMsg || '修改书名失败')
+      return
+    }
+    const newUrl = typeof data === 'string' && data.trim() ? data.trim() : bookUrl
+    store.readingBook.name = name
+    store.readingBook.bookUrl = newUrl
+    if (shelfBook) {
+      shelfBook.name = name
+      shelfBook.bookUrl = newUrl
+    }
+    sessionStorage.setItem('bookName', name)
+    sessionStorage.setItem('bookUrl', newUrl)
+    sessionStorage.setItem(
+      'chapterIndex',
+      String(store.readingBook.chapterIndex || 0),
+    )
+    sessionStorage.setItem(
+      'chapterPos',
+      String(store.readingBook.chapterPos || 0),
+    )
+    ElMessage.success('书名已修改，正在重新载入')
+    window.setTimeout(() => window.location.reload(), 300)
+  } catch (error) {
+    ElMessage.error('修改书名失败')
+    console.error(error)
+  }
+}
+
 function resetAllSettings() {
   Object.assign(store.config, {
     theme: 0,
@@ -251,8 +278,6 @@ const themeColors = [
   '#17191c',
   '#E6E6DD',
 ]
-const clickAreas = readClickAreas
-const clickActionOptions = readClickActionOptions
 </script>
 
 <style scoped>
@@ -354,16 +379,35 @@ const clickActionOptions = readClickActionOptions
   border-color: #e45b67;
   color: #d64958;
 }
-.click-config {
-  display: grid;
-  gap: 10px;
-  padding-top: 2px;
+.book-title-button {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px dashed transparent;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 2px;
+  cursor: pointer;
 }
-.click-config-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+.book-title-button:hover {
+  border-bottom-color: rgba(128, 128, 128, 0.5);
+}
+.book-title-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #d64958;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 3px 6px;
 }
 .reset-button {
   border: 0;
@@ -371,43 +415,6 @@ const clickActionOptions = readClickActionOptions
   color: #d64958;
   font-size: 11px;
   cursor: pointer;
-}
-.click-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 5px;
-  padding: 5px;
-  border: 1px solid rgba(128, 128, 128, 0.26);
-  border-radius: 7px;
-}
-.click-hint {
-  margin: 0;
-  color: var(--settings-muted);
-  font-size: 11px;
-}
-.click-cell {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-  padding: 7px 5px;
-  border: 1px solid rgba(128, 128, 128, 0.22);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--settings-fg) 4%, transparent);
-}
-.click-cell > span {
-  color: var(--settings-muted);
-  font-size: 10px;
-  text-align: center;
-}
-.click-cell select {
-  width: 100%;
-  min-width: 0;
-  border: 1px solid rgba(128, 128, 128, 0.26);
-  border-radius: 4px;
-  padding: 4px 2px;
-  background: transparent;
-  color: inherit;
-  font-size: 10px;
 }
 input[type='range'] {
   width: 100%;
@@ -418,44 +425,8 @@ input[type='range'] {
 <style>
 .lan-reset-row {
   display: flex;
-  justify-content: flex-end;
-}
-.lan-click-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  background: rgba(0, 0, 0, 0.35);
-  display: grid;
-  place-items: center;
-  padding: 16px;
-}
-.lan-click-modal {
-  width: min(360px, 100%);
-  max-height: 80vh;
-  overflow: auto;
-  border-radius: 12px;
-  background: var(--page-bg, #fff);
-  color: var(--page-fg, #222);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
-  padding: 14px;
-}
-.lan-click-head {
-  display: flex;
   align-items: center;
+  gap: 8px;
   justify-content: space-between;
-  margin-bottom: 6px;
-}
-.lan-click-close {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font-size: 14px;
-  cursor: pointer;
-  padding: 2px 6px;
-}
-.lan-click-foot {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 10px;
 }
 </style>
