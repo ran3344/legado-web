@@ -29,6 +29,12 @@ const default_config: webReadConfig = {
     line: 0.8,
     letter: 0,
   },
+  margin: {
+    top: 16,
+    right: 16,
+    bottom: 16,
+    left: 16,
+  },
 }
 
 const normalizeClickActions = (
@@ -191,6 +197,17 @@ export const useBookStore = defineStore('book', {
           ...this.config.spacing,
           ...nextConfig.spacing,
         },
+        margin: (() => {
+          const merged = {
+            ...default_config.margin,
+            ...this.config.margin,
+            ...nextConfig.margin,
+          }
+          // 修复历史版本左右/上下不对称的数据（旧 UI 只写了单侧）
+          merged.right = merged.left
+          merged.bottom = merged.top
+          return merged
+        })(),
         clickActions: normalizeClickActions({
           ...this.config.clickActions,
           ...nextConfig.clickActions,

@@ -12,6 +12,12 @@ export type webReadConfig = {
     line: number
     letter: number
   }
+  margin: {
+    top: number
+    right: number
+    bottom: number
+    left: number
+  }
 }
 
 export type ReadMode = 'scroll' | 'horizontal' | 'click'
