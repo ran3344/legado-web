@@ -53,6 +53,12 @@ const settings = {
       content: '#ede7da url(' + content_6 + ') repeat',
       popup: '#ede7da url(' + popup_6 + ') repeat',
     },
+    {
+      // 留园亚麻纸：米灰黄底 + 纯黑字（cool18 风格）
+      body: '#E6E6DD',
+      content: '#E6E6DD',
+      popup: '#e6e6dd',
+    },
   ],
   fonts: [
     'Microsoft YaHei, PingFangSC-Regular, HelveticaNeue-Light, Helvetica Neue Light, sans-serif',

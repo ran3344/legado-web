@@ -56,6 +56,7 @@
           v-for="book in shownBooks"
           :key="book.bookUrl"
           class="book-entry"
+          :class="{ 'is-read': isStarted(cleanTitle(book.name)) }"
           type="button"
           @click="openBook(book)"
         >
@@ -76,7 +77,7 @@
             /></span>
           </span>
           <span class="book-meta"
-            ><strong>{{ book.name }}</strong></span
+            ><strong>{{ displayTitle(book.name) }}</strong></span
           >
         </button>
       </div>
@@ -89,6 +90,39 @@ import { Reading, Grid, List, Search, Refresh } from '@element-plus/icons-vue'
 import type { Book } from '@/book'
 import { useBookStore } from '@/store'
 import { demoBook } from '@/features/demo/demoBook'
+
+const PROMO_DOMAIN_RE = /(?:[\w-]+\.)+(?:org|com|net|cc|me|info|xyz|top|vip|site|online|club|fun|icu|biz|io|co|us|tv|moe|ltd|shop|store|pro|art|app|dev|page|wiki|link|live|press|ink|lol|pics)\b/i
+
+// 书名去推广站点标签（如 [sxsy.org]）与前导空白
+function cleanTitle(raw: string): string {
+  let text = String(raw || '').trim()
+  let previous: string | null = null
+  while (previous !== text) {
+    previous = text
+    text = text.replace(new RegExp(`[\\[【（(]?\\s*${PROMO_DOMAIN_RE.source}\\s*[\\]】）)]?`, 'gi'), '')
+    text = text.replace(/\s{2,}/g, ' ').trim()
+    text = text.replace(/^[）)】\]】]+/, '').trim()
+  }
+  return text
+}
+
+// 全角【字形自带左侧空白，会让列表左缘参差；显示时转为半角 [ 对齐
+function displayTitle(raw: string): string {
+  const text = cleanTitle(raw)
+  return text.startsWith('【') ? `[${text.slice(1)}` : text
+}
+
+// 已读书籍（已开始阅读）标记，用于列表模式变色
+const startedBooks = computed(() => {
+  const map = new Map<string, boolean>()
+  for (const book of store.shelf) {
+    map.set(cleanTitle(book.name), (book.durChapterIndex ?? 0) > 0)
+  }
+  return map
+})
+function isStarted(name: string): boolean {
+  return startedBooks.value.get(cleanTitle(name)) === true
+}
 
 const store = useBookStore()
 const router = useRouter()
@@ -291,6 +325,7 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  align-items: center;
 }
 .header-actions .el-select {
   width: 112px;
@@ -329,11 +364,55 @@ onBeforeUnmount(() => {
 }
 .book-layout.grid {
   grid-template-columns: repeat(auto-fill, minmax(132px, 154px));
-  justify-content: start;
+  /* 剩余空间左右均分，避免右侧留一大截、两侧不对称 */
+  justify-content: center;
   gap: 28px 18px;
 }
 .book-layout.list {
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+.book-layout.list .book-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 0;
+  border-bottom: 1px solid #e4e6ea;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+.book-layout.list .book-entry:last-child {
+  border-bottom: 0;
+}
+.book-layout.list .book-entry:hover {
+  background: #f3f4f6;
+}
+.book-layout.list .cover-wrap {
+  display: none;
+}
+.book-layout.list .book-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 0;
+}
+.book-layout.list .book-meta strong {
+  text-align: left;
+  font-size: 14px;
+}
+.book-layout.list .book-entry.is-read .book-meta strong {
+  color: #8a90a0;
+}
+.night .book-layout.list .book-entry {
+  border-bottom-color: #30343a;
+}
+.night .book-layout.list .book-entry:hover {
+  background: #24272c;
+}
+.night .book-layout.list .book-entry.is-read .book-meta strong {
+  color: #6f7684;
 }
 .book-entry {
   min-width: 0;
