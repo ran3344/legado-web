@@ -4,6 +4,7 @@ const fonts = [
   'Microsoft YaHei, PingFangSC-Regular, HelveticaNeue-Light, sans-serif',
   'PingFangSC-Regular, -apple-system, Simsun, sans-serif',
   'Kaiti, KaiTi, serif',
+  'FangSong, FangSong_GB2312, STFangsong, serif',
 ]
 
 const backgrounds = [
@@ -14,6 +15,7 @@ const backgrounds = [
   '#f5e5e5',
   '#eeeeee',
   '#17191c',
+  '#E6E6DD',
 ]
 const foregrounds = [
   '#29261f',
@@ -23,6 +25,7 @@ const foregrounds = [
   '#36272b',
   '#242424',
   '#d8d9dc',
+  '#000000',
 ]
 
 export const getReaderColors = (theme: number) => ({
@@ -32,13 +35,17 @@ export const getReaderColors = (theme: number) => ({
 
 export const getFoliateStyles = (config: webReadConfig) => {
   const { background, foreground } = getReaderColors(config.theme)
+  // 亚麻纸主题（7）默认配衬线字体，还原留园阅读质感；用户手动选字体后以用户为准
+  const serifForCool18 = config.theme === 7 && (!config.font || config.font === 0)
   const fontFamily =
     config.font === -1 && config.customFontName
       ? `'${config.customFontName}', sans-serif`
-      : fonts[config.font] || fonts[0]
+      : serifForCool18
+        ? 'Georgia, "Times New Roman", Simsun, serif'
+        : fonts[config.font] || fonts[0]
   return `
     html { background: ${background}; color: ${foreground}; }
-    body { box-sizing: border-box; margin: 0; padding: 0 10px; background: ${background}; color: ${foreground}; font-family: ${fontFamily}; font-size: ${config.fontSize}px; line-height: ${1 + config.spacing.line}; letter-spacing: ${config.spacing.letter}em; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+    body { box-sizing: border-box; margin: 0; padding: 0; background: ${background}; color: ${foreground}; font-family: ${fontFamily}; font-size: ${config.fontSize}px; line-height: ${1 + config.spacing.line}; letter-spacing: ${config.spacing.letter}em; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
      article { margin: 0; padding: .5rem 0 0; }
      article[data-legado-chapter] + article[data-legado-chapter] {
        break-before: page;

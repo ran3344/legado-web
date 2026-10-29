@@ -3,6 +3,7 @@ import {
   findMarkerById,
   openCatalogAt,
   openReader,
+  openReaderMenu,
   pageIndicator,
   readerState,
   scrollReaderBy,
@@ -14,6 +15,50 @@ import {
 } from './helpers'
 
 const STABLE_OFFSET_DELTA = 4
+
+type ColumnMetrics = {
+  left: number
+  right: number
+  textWidth: number
+  bodyPaddingLeft: string
+  pages: number
+}
+
+const measureColumn = (page: Page): Promise<ColumnMetrics | null> =>
+  page.evaluate(() => {
+    const view = document.querySelector('foliate-view') as any
+    const renderer = view?.renderer
+    const doc: Document | null = renderer?.getContents?.()?.[0]?.doc ?? null
+    if (!renderer || !doc) return null
+    const win = doc.defaultView!
+    const iframeRect = (win.frameElement as HTMLElement).getBoundingClientRect()
+    const viewRect = view.getBoundingClientRect()
+    const paragraph = doc.querySelector<HTMLElement>(
+      'article[data-legado-chapter] p',
+    )
+    const rect = paragraph?.getClientRects()[0]
+    if (!rect) return null
+    const bodyStyle = win.getComputedStyle(doc.body)
+    return {
+      left: Math.round(rect.left + iframeRect.left - viewRect.left),
+      right: Math.round(viewRect.right - (rect.right + iframeRect.left)),
+      textWidth: Math.round(rect.width),
+      bodyPaddingLeft: bodyStyle.paddingLeft,
+      pages: renderer.pages as number,
+    }
+  })
+
+const setRangeSetting = async (page: Page, label: string, value: string) => {
+  await page
+    .locator('.settings-panel label.range-setting', { hasText: label })
+    .locator('input')
+    .evaluate((el, v) => {
+      const input = el as HTMLInputElement
+      input.value = v
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }, value)
+  await page.waitForTimeout(200)
+}
 
 const dismissReaderMenu = async (page: Page) => {
   const box = await page.locator('.reader-stage').boundingBox()
@@ -422,4 +467,34 @@ const waitForPageMove = async (
     if (stableSamples >= 2 && lastKey !== previousKey) return lastIndicator
   }
   return lastIndicator
+}
+
+for (const mode of ['scroll', 'horizontal'] as const) {
+  test(`阅读设置：${mode} 调整页边距当场重排，无需刷新且左右对称`, async ({
+    page,
+  }) => {
+    await openReader(page, mode)
+    await openReaderMenu(page)
+    await page.locator('.reader-tools button[title="阅读设置"]').click()
+    await expect(page.locator('.settings-panel')).toBeVisible()
+
+    const before = await measureColumn(page)
+    expect(before).not.toBeNull()
+
+    await setRangeSetting(page, '左右', '40')
+    const after = await measureColumn(page)
+    expect(after).not.toBeNull()
+    // 页边距只能生效一次：左右各 40px。以前拖动时会额外叠一层 body padding，
+    // 且 paginator 的动态重排被 `!this.document` 守卫拦掉，导致预览错位、
+    // 必须刷新页面才恢复正确版式。
+    expect(Math.abs(after!.left - 40)).toBeLessThanOrEqual(2)
+    expect(Math.abs(after!.right - 40)).toBeLessThanOrEqual(2)
+    expect(Math.abs(after!.left - after!.right)).toBeLessThanOrEqual(2)
+    expect(after!.textWidth).toBeLessThan(before!.textWidth - 30)
+
+    // 字号变化同样要即时重排（页数跟着变），而不是等刷新
+    await setRangeSetting(page, '字号', '26')
+    const bigger = await measureColumn(page)
+    expect(bigger!.pages).not.toBe(after!.pages)
+  })
 }

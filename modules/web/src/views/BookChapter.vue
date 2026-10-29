@@ -192,10 +192,13 @@
         <Memo />
       </button>
     </footer>
+    <div class="lan-scrollbar" :class="{ 'lan-scrolling': lanScrolling }" aria-hidden="true">
+      <div class="lan-thumb" :style="lanThumbStyle" />
+    </div>
     <div
       v-if="catalog.length && !loading && !errorMessage"
       class="book-progress"
-      :class="{ 'above-footer': menuVisible }"
+      :class="{ 'above-footer': menuVisible, 'lan-visible': lanScrolling }"
       aria-label="全书阅读进度"
     >
       全书 {{ bookProgressText }}
@@ -352,6 +355,76 @@ const catalogBottomSpacer = computed(
 )
 const settingsVisible = ref(false)
 const menuVisible = ref(false)
+
+// ---- 滚动手势自动隐藏工具栏（局域网共享定制）----
+function hideChromeOnGesture() {
+  menuVisible.value = false
+}
+document.addEventListener('wheel', hideChromeOnGesture, { capture: true, passive: true })
+let lanTouchStartY: number | null = null
+document.addEventListener(
+  'touchstart',
+  (e) => {
+    if (e.touches.length === 1) lanTouchStartY = e.touches[0].clientY
+  },
+  { capture: true, passive: true },
+)
+document.addEventListener(
+  'touchmove',
+  (e) => {
+    if (lanTouchStartY !== null && e.touches.length === 1) {
+      if (Math.abs(e.touches[0].clientY - lanTouchStartY) > 14) {
+        hideChromeOnGesture()
+        lanTouchStartY = e.touches[0].clientY
+      }
+    }
+  },
+  { capture: true, passive: true },
+)
+document.addEventListener(
+  'touchend',
+  () => {
+    lanTouchStartY = null
+  },
+  { capture: true, passive: true },
+)
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', ' '].includes(e.key)) {
+      hideChromeOnGesture()
+    }
+  },
+  { capture: true },
+)
+
+// ---- 细条滚动指示器（cool18 风格）----
+const lanPercent = ref(0)
+const lanScrollBarEl = ref<HTMLElement | null>(null)
+const lanThumbEl = ref<HTMLElement | null>(null)
+const lanScrolling = ref(false)
+let lanFadeTimer: ReturnType<typeof setTimeout> | null = null
+const lanThumbStyle = computed(() => {
+  const pct = Math.max(0, Math.min(100, lanPercent.value))
+  const thumbH = 36
+  const track = 100 - thumbH
+  return {
+    height: `${thumbH}px`,
+    top: `${Math.round(track * (pct / 100))}px`,
+    opacity: lanScrolling.value ? 0.6 : 0,
+  }
+})
+function refreshLanScrollPercent() {
+  const input = document.querySelector<HTMLInputElement>(
+    '.reader-footer input[type="range"]',
+  )
+  lanPercent.value = input ? Number(input.value) || 0 : 0
+  lanScrolling.value = true
+  if (lanFadeTimer) clearTimeout(lanFadeTimer)
+  lanFadeTimer = setTimeout(() => {
+    lanScrolling.value = false
+  }, 900)
+}
 const errorMessage = ref('')
 const isFullscreen = ref(false)
 let boundaryTimer: ReturnType<typeof setTimeout> | undefined
@@ -558,14 +631,30 @@ const applyReaderConfig = () => {
   renderer.toggleAttribute('animated', store.config.readMode !== 'scroll')
   renderer.setAttribute('max-column-count', '1')
   const inlineSize = readerStage.value?.clientWidth
-  if (inlineSize) renderer.setAttribute('max-inline-size', `${inlineSize}px`)
+  // 页边距（左右）通过 max-inline-size 收窄内容列宽实现：网格会把收窄后的
+  // 列居中，两侧留出对称空白；比 body padding 更可靠（分栏模式下 body
+  // padding 只影响首尾页）。
+  const marginCfg = store.config.margin || { top: 16, right: 16, bottom: 16, left: 16 }
+  if (inlineSize) {
+    const inset = Math.max(0, Math.min(marginCfg.left, 200))
+    renderer.setAttribute('max-inline-size', `${Math.max(inlineSize - inset * 2, 200)}px`)
+  }
   renderer.setAttribute(
     'max-block-size',
     `${Math.max(readerStage.value?.clientHeight || 0, 320)}px`,
   )
+  // foliate 翻页模式：margin 属性必须保持 '0px'（非 0 会形成上下边距带并
+  // 干扰分栏，导致文字重叠）。滚动模式：margin 值映射为左右内边距。
   renderer.setAttribute('margin', '0px')
   renderer.setAttribute('gap', '0%')
-  renderer.setStyles(getFoliateStyles(store.config))
+  // 左右页边距统一只经由上面那个 max-inline-size 收窄内容列宽实现，
+  // 不能再额外叠加 body 水平 padding：两处同时生效会双重内缩，且分栏
+  // 模式下 padding 只影响可视列的起点，导致左右留白不对称（预览与刷新
+  // 后样式不一致）。
+  let extra = ' body { padding-bottom: 48px !important; }'
+  if (renderer.scrolled)
+    extra += ' article[data-legado-chapter] { padding-bottom: 48px !important; }'
+  renderer.setStyles(getFoliateStyles(store.config) + extra)
 }
 const updateProgress = (
   index: number,
@@ -1663,6 +1752,8 @@ const bindRendererEvents = (view: FoliateView) => {
       updateProgress(detail.index, detail.fraction, displayedProgress)
       refreshChapterPageInfo(view.renderer, detail.index, detail)
     }
+    // 细条滚动指示器随内容位置刷新（局域网共享定制）
+    refreshLanScrollPercent()
   })
   view.renderer.addEventListener('scroll', handleReaderScroll)
 }
@@ -2067,8 +2158,14 @@ onBeforeUnmount(() => {
   letter-spacing: 0.02em;
   pointer-events: none;
   user-select: none;
-  opacity: 0.78;
-  transition: bottom 150ms ease;
+  /* 平时隐藏，滚动/翻页时浮现，避免常驻盖住最后一行 */
+  opacity: 0;
+  transition:
+    opacity 0.45s ease,
+    bottom 150ms ease;
+}
+.book-progress.lan-visible {
+  opacity: 0.85;
 }
 .book-progress.above-footer {
   bottom: calc(var(--reader-footer-height) + 5px);
@@ -2083,6 +2180,12 @@ onBeforeUnmount(() => {
   overflow: hidden;
   background: var(--page-bg);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+/* 拖动页边距滑块时临时半透明，实时预览边距效果 */
+.settings-panel.lan-dragging {
+  background: color-mix(in srgb, var(--page-bg) 55%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 .catalog-backdrop {
   position: absolute;
@@ -2330,5 +2433,37 @@ onBeforeUnmount(() => {
   .progress-control input {
     margin: 0;
   }
+}
+
+.lan-scrollbar {
+  position: fixed;
+  right: 3px;
+  top: calc(var(--reader-header-height, 54px) + 10px);
+  bottom: calc(var(--reader-footer-height, 50px) + 10px);
+  width: 5px;
+  z-index: 9;
+  pointer-events: none;
+}
+.lan-scrollbar .lan-thumb {
+  position: absolute;
+  right: 0;
+  width: 100%;
+  min-height: 36px;
+  border-radius: 3px;
+  background: #9aa0ab;
+  opacity: 0;
+  transition:
+    opacity 0.45s ease,
+    top 0.12s linear,
+    height 0.12s linear;
+}
+.lan-scrollbar.lan-scrolling .lan-thumb {
+  opacity: 0.6;
+}
+.night .lan-scrollbar .lan-thumb {
+  background: #5b616b;
+}
+.reader-page.lan-cool18 .lan-scrollbar .lan-thumb {
+  background: #a49e8c;
 }
 </style>

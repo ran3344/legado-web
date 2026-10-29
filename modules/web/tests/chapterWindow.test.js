@@ -167,7 +167,10 @@ test('covers the Foliate reader architecture and its navigation contracts', () =
   assert.match(bookChapter, /width: auto;/)
   assert.match(bookChapter, /flex: 0 0 52px;/)
   assert.match(bookChapter, /width: min\(280px, calc\(100vw - 32px\)\)/)
-  assert.match(bookChapter, /\.catalog-item:hover \{[\s\S]*?\}\n\.catalog-item\.selected \{/)
+  assert.match(
+    bookChapter,
+    /\.catalog-item:hover \{[\s\S]*?\}\r?\n\.catalog-item\.selected \{/,
+  )
   assert.match(bookChapter, /max="100"[\s\S]*step="0\.1"/)
   assert.match(bookChapter, /aria-label="当前章节进度"/)
   assert.match(bookChapter, /chapterPageInfo\.current/)

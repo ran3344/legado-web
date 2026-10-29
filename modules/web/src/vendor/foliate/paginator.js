@@ -799,7 +799,10 @@ export class Paginator extends HTMLElement {
         return { height, width, margin, gap, columnWidth }
     }
     render() {
-        if (!this.#view || !this.document) return
+        // NOTE: `Paginator` has no `document` property (that getter belongs to
+        // `View`); guarding on it made every dynamic re-render a no-op, so
+        // setting changes and window resizes only took effect after a reload.
+        if (!this.#view) return
         this.#view.render(this.#beforeRender({
             vertical: this.#vertical,
             rtl: this.#rtl,
