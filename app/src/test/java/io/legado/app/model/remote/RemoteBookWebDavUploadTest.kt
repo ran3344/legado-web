@@ -178,8 +178,8 @@ class RemoteBookWebDavUploadTest {
 
         // 单一开关,默认开启;旧开关已移除,避免两份口径
         assertTrue(appConfig.contains("PreferKey.webDavBookAutoUpload, true"))
-        // 删除远程文件默认关闭, 避免"全选删除"把云端书库清空
-        assertTrue(appConfig.contains("PreferKey.webDavBookAutoDelete, false"))
+        // 删除远程文件默认开启: 删除即真删, 云端不留残骸
+        assertTrue(appConfig.contains("PreferKey.webDavBookAutoDelete, true"))
         assertFalse(localConfig.contains("uploadImportedBookToWebDav"))
 
         // 所有本地导入入口都接入自动上传

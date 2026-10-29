@@ -756,16 +756,13 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
         set(value) = appCtx.putPrefBoolean(PreferKey.webDavBookAutoUpload, value)
 
     /**
-     * 删除本地书籍时同步删除 WebDAV 上的文件
-     */
-    /**
-     * 删除本地书籍时是否同时删除 WebDAV 上的同名文件
+     * 删除本地书籍时同步删除 WebDAV 上的同名文件
      *
-     * 默认关闭: 删除对话框里的勾选会写回这里, 开着的话"全选删除"会顺手把云端书库清空,
-     * 之后下拉刷新就再也同步不回任何书了。
+     * 默认开启: 删除即真删, 云端不留残骸。
+     * 注意删除对话框里的勾选会写回这里, "全选删除"会连云端书库一起删掉。
      */
     var webDavBookAutoDelete: Boolean
-        get() = appCtx.getPrefBoolean(PreferKey.webDavBookAutoDelete, false)
+        get() = appCtx.getPrefBoolean(PreferKey.webDavBookAutoDelete, true)
         set(value) = appCtx.putPrefBoolean(PreferKey.webDavBookAutoDelete, value)
 
     /**
